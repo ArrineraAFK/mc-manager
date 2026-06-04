@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self'; connect-src https://launchermeta.mojang.com https://api.papermc.io https://meta.fabricmc.net https://files.minecraftforge.net https://maven.neoforged.net">
+  <title>MC Manager</title>
+  <link rel="stylesheet" href="./index.css">
+  <script src="./index.js" defer></script>
+</head>
+<body>
+
+<div class="titlebar">
+  <div class="status-dot" id="statusDot"></div>
+  <span>MC MANAGER</span>
+  <div class="titlebar-server" id="titlebarServer">Kein Server ausgewählt</div>
+</div>
+
+<div class="layout">
+  <nav>
+    <button class="active" onclick="showTab('servers', this)"><span class="icon">⊟</span> Server</button>
+    <button onclick="showTab('logs', this)"><span class="icon">≡</span> Logs</button>
+    <button onclick="showTab('rcon', this)"><span class="icon">⌘</span> RCON</button>
+    <button onclick="showTab('props', this)"><span class="icon">⚙</span> Einstellungen</button>
+    <button onclick="showTab('mods', this)"><span class="icon">⊞</span> Mods</button>
+    <button onclick="showTab('backup', this)"><span class="icon">◫</span> Backup</button>
+    <button onclick="showTab('download', this)"><span class="icon">↓</span> Download</button>
+    <div class="spacer"></div>
+    <div class="version">v1.0.0</div>
+  </nav>
+
+  <main>
+
+    <!-- SERVER ÜBERSICHT -->
+    <div class="tab active" id="tab-servers">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h2>Server</h2>
+        <button class="btn btn-primary" onclick="openAddServer()">+ Server hinzufügen</button>
+      </div>
+      <div id="serverList" class="server-list">
+        <p style="color:var(--muted);font-size:13px">Noch keine Server konfiguriert.</p>
+      </div>
+    </div>
+
+    <!-- LOGS -->
+    <div class="tab" id="tab-logs">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h2>Logs</h2>
+        <div id="logServerPicker"></div>
+      </div>
+      <div class="log-box" id="logBox"></div>
+      <div class="cmd-row">
+        <input type="text" id="cmdInput" placeholder="Befehl eingeben..." onkeydown="if(event.key==='Enter')sendCommand()">
+        <button class="btn btn-ghost" onclick="sendCommand()">Senden</button>
+        <button class="btn btn-ghost" onclick="clearLog()">Leeren</button>
+      </div>
+    </div>
+
+    <!-- RCON -->
+    <div class="tab" id="tab-rcon">
+      <h2>RCON</h2>
+      <div class="card">
+        <h3>Verbindung</h3>
+        <div class="row">
+          <div class="col"><label>Host</label><input type="text" id="rconHost" value="localhost" style="width:160px"></div>
+          <div class="col"><label>Port</label><input type="number" id="rconPort" value="25575" style="width:100px"></div>
+          <div class="col"><label>Passwort</label><input type="password" id="rconPass" placeholder="rcon.password" style="width:180px"></div>
+          <button class="btn btn-primary" onclick="rconConnect()" style="margin-bottom:0">Verbinden</button>
+        </div>
+      </div>
+      <div class="log-box" id="rconLog" style="flex:1"></div>
+      <div class="cmd-row">
+        <input type="text" id="rconCmd" placeholder="RCON-Befehl..." onkeydown="if(event.key==='Enter')rconSend()">
+        <button class="btn btn-ghost" onclick="rconSend()">Senden</button>
+      </div>
+    </div>
+
+    <!-- PROPERTIES -->
+    <div class="tab" id="tab-props">
+      <h2>server.properties</h2>
+      <div class="row" style="flex-shrink:0">
+        <button class="btn btn-ghost" onclick="loadProps()">↻ Laden</button>
+        <button class="btn btn-success" onclick="saveProps()">✓ Speichern</button>
+      </div>
+      <div class="props-grid" id="propsGrid">
+        <p style="color:var(--muted);font-size:13px">Server auswählen und auf Laden klicken.</p>
+      </div>
+    </div>
+
+    <!-- MODS -->
+    <div class="tab" id="tab-mods">
+      <h2>Mods & Plugins</h2>
+      <div class="row" style="flex-shrink:0;align-items:center">
+        <button class="btn btn-ghost" onclick="scanMods()">↻ Scannen</button>
+        <input type="text" id="modSearch" placeholder="Suchen..." oninput="filterMods()" style="width:200px">
+        <select id="modFilterLoader" oninput="filterMods()" style="width:140px">
+          <option value="">Alle Loader</option>
+          <option value="Fabric">Fabric</option>
+          <option value="Forge">Forge</option>
+          <option value="NeoForge">NeoForge</option>
+          <option value="Paper">Paper</option>
+          <option value="Quilt">Quilt</option>
+          <option value="Unknown">Unbekannt</option>
+        </select>
+        <span id="modCount" style="font-size:12px;color:var(--muted);margin-left:4px"></span>
+      </div>
+      <div class="mod-grid" id="modGrid">
+        <p style="color:var(--muted);font-size:13px">Server auswählen und auf Scannen klicken.</p>
+      </div>
+    </div>
+
+    <!-- BACKUP -->
+    <div class="tab" id="tab-backup">
+      <h2>Backup</h2>
+      <div class="card">
+        <h3>Backup-Ziel</h3>
+        <div class="path-row">
+          <input type="text" id="backupPath" placeholder="Backup-Ordner auswählen..." readonly>
+          <button class="btn btn-ghost" onclick="selectBackupFolder()">Durchsuchen</button>
+        </div>
+      </div>
+      <div class="card" style="display:flex;flex-direction:column;gap:10px">
+        <h3>Jetzt sichern</h3>
+        <p style="font-size:13px;color:var(--muted)">Erstellt eine vollständige Kopie des aktiven Server-Ordners mit Zeitstempel.</p>
+        <div><button class="btn btn-success" onclick="createBackup()">◫ Backup erstellen</button></div>
+      </div>
+      <div class="log-box" id="backupLog" style="max-height:160px;flex:none"></div>
+    </div>
+
+    <!-- DOWNLOAD -->
+    <div class="tab" id="tab-download">
+      <h2>Server herunterladen</h2>
+      <div class="card">
+        <h3>Loader & Version</h3>
+        <div class="row" style="align-items:flex-end">
+          <div class="col">
+            <label>Loader</label>
+            <select id="dlLoader" style="width:150px" onchange="loadDlVersions()">
+              <option value="vanilla">Vanilla</option>
+              <option value="paper">Paper</option>
+              <option value="fabric">Fabric</option>
+              <option value="forge">Forge</option>
+              <option value="neoforge">NeoForge</option>
+            </select>
+          </div>
+          <div class="col">
+            <label>Minecraft-Version</label>
+            <select id="dlVersion" style="width:160px" onchange="loadDlBuilds()">
+              <option>– laden –</option>
+            </select>
+          </div>
+          <div class="col" id="dlBuildCol" style="display:none">
+            <label>Build</label>
+            <select id="dlBuild" style="width:160px">
+              <option>– laden –</option>
+            </select>
+          </div>
+          <button class="btn btn-ghost" onclick="loadDlVersions()" style="margin-bottom:0">↻</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Zielordner</h3>
+        <div class="path-row">
+          <input type="text" id="dlDestPath" placeholder="Ordner auswählen..." readonly>
+          <button class="btn btn-ghost" onclick="selectDlFolder()">Durchsuchen</button>
+        </div>
+      </div>
+
+      <div class="card" style="display:flex;flex-direction:column;gap:12px">
+        <button class="btn btn-primary" id="dlBtn" onclick="startDownload()" style="width:fit-content">↓ Herunterladen</button>
+        <div id="dlProgressWrap" style="display:none;flex-direction:column;gap:6px">
+          <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted)">
+            <span id="dlStatusText">Wird heruntergeladen...</span>
+            <span id="dlPct">0%</span>
+          </div>
+          <div style="background:var(--bg2);border-radius:6px;height:6px;overflow:hidden">
+            <div id="dlBar" style="height:100%;width:0%;background:var(--accent);transition:width 0.2s;border-radius:6px"></div>
+          </div>
+        </div>
+        <div id="dlResult" style="font-size:13px;display:none"></div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- ADD SERVER MODAL -->
+<div id="modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:200;align-items:center;justify-content:center">
+  <div class="card" style="width:480px;display:flex;flex-direction:column;gap:14px">
+    <h2 id="modalTitle">Server hinzufügen</h2>
+    <div class="col">
+      <label>Name</label>
+      <input type="text" id="srvName" placeholder="Mein Server">
+    </div>
+    <div class="col">
+      <label>Server-Ordner</label>
+      <div class="path-row">
+        <input type="text" id="srvPath" placeholder="Ordner auswählen..." readonly>
+        <button class="btn btn-ghost" onclick="selectSrvFolder()">Durchsuchen</button>
+      </div>
+    </div>
+    <div class="row">
+      <div class="col">
+        <label>JAR-Datei</label>
+        <input type="text" id="srvJar" value="server.jar" style="width:160px">
+      </div>
+      <div class="col">
+        <label>RAM (MB)</label>
+        <input type="number" id="srvRam" value="2048" min="512" max="32768" style="width:110px">
+      </div>
+    </div>
+    <div class="row">
+      <div class="col">
+        <label>Minecraft-Version</label>
+        <select id="srvVersion" style="width:140px">
+          <option>1.21.4</option><option>1.20.4</option><option>1.20.1</option>
+          <option>1.19.4</option><option>1.18.2</option><option>1.16.5</option><option>1.12.2</option>
+        </select>
+      </div>
+      <div class="col">
+        <label>Mod-Loader</label>
+        <select id="srvLoader" style="width:140px">
+          <option value="vanilla">Vanilla</option>
+          <option value="fabric">Fabric</option>
+          <option value="forge">Forge</option>
+          <option value="neoforge">NeoForge</option>
+          <option value="paper">Paper</option>
+          <option value="purpur">Purpur</option>
+        </select>
+      </div>
+    </div>
+    <div class="row" style="justify-content:flex-end;margin-top:4px">
+      <button class="btn btn-ghost" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-primary" onclick="saveServer()">Speichern</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+</body>
+</html>
