@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self'; connect-src https://launchermeta.mojang.com https://api.papermc.io https://meta.fabricmc.net https://files.minecraftforge.net https://maven.neoforged.net">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' 'unsafe-inline' 'unsafe-hashes'; img-src 'self' https://cdn.modrinth.com https://avatars.githubusercontent.com https://hangar.papermc.io data: blob:; connect-src https://launchermeta.mojang.com https://api.papermc.io https://meta.fabricmc.net https://files.minecraftforge.net https://maven.neoforged.net https://api.modrinth.com https://cdn.modrinth.com https://hangar.papermc.io">
   <title>MC Manager</title>
   <link rel="stylesheet" href="./index.css">
   <script src="./index.js" defer></script>
@@ -12,202 +12,409 @@
 <div class="titlebar">
   <div class="status-dot" id="statusDot"></div>
   <span>MC MANAGER</span>
-  <div class="titlebar-server" id="titlebarServer">Kein Server ausgewählt</div>
+  <div class="titlebar-server" id="titlebarServer"></div>
 </div>
 
 <div class="layout">
   <nav>
-    <button class="active" onclick="showTab('servers', this)"><span class="icon">⊟</span> Server</button>
-    <button onclick="showTab('logs', this)"><span class="icon">≡</span> Logs</button>
-    <button onclick="showTab('rcon', this)"><span class="icon">⌘</span> RCON</button>
-    <button onclick="showTab('props', this)"><span class="icon">⚙</span> Einstellungen</button>
-    <button onclick="showTab('mods', this)"><span class="icon">⊞</span> Mods</button>
-    <button onclick="showTab('backup', this)"><span class="icon">◫</span> Backup</button>
-    <button onclick="showTab('download', this)"><span class="icon">↓</span> Download</button>
+    <button class="active" onclick="showMainTab('servers', this)"><span class="icon">⊟</span> Server</button>
+    <button onclick="showMainTab('settings', this)"><span class="icon">⚙</span> Einstellungen</button>
     <div class="spacer"></div>
     <div class="version">v1.0.0</div>
   </nav>
 
   <main>
 
-    <!-- SERVER ÜBERSICHT -->
-    <div class="tab active" id="tab-servers">
-      <div style="display:flex;justify-content:space-between;align-items:center">
+    <!-- ══ SERVER-LISTE ══ -->
+    <div class="main-tab active" id="main-servers">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:24px 24px 0">
         <h2>Server</h2>
         <button class="btn btn-primary" onclick="openAddServer()">+ Server hinzufügen</button>
       </div>
-      <div id="serverList" class="server-list">
-        <p style="color:var(--muted);font-size:13px">Noch keine Server konfiguriert.</p>
-      </div>
+      <div id="serverList" class="server-list" style="padding:16px 24px 24px"></div>
     </div>
 
-    <!-- LOGS -->
-    <div class="tab" id="tab-logs">
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <h2>Logs</h2>
-        <div id="logServerPicker"></div>
+    <!-- ══ SERVER-DETAIL ══ -->
+    <div class="main-tab" id="main-detail">
+      <div class="sub-nav">
+        <button class="sub-btn active" onclick="showSubTab('overview', this)">Übersicht</button>
+        <button class="sub-btn" onclick="showSubTab('stats', this)">Stats</button>
+        <button class="sub-btn" onclick="showSubTab('logs', this)">Logs</button>
+        <button class="sub-btn" onclick="showSubTab('rcon', this)">RCON & Spieler</button>
+        <button class="sub-btn" onclick="showSubTab('files', this)">Files</button>
+        <button class="sub-btn" onclick="showSubTab('mods', this)">Mods</button>
+        <button class="sub-btn" onclick="showSubTab('whitelist', this)">Whitelist</button>
+        <button class="sub-btn" onclick="showSubTab('serversettings', this)">Einstellungen</button>
+        <button class="sub-btn" onclick="showSubTab('backup', this)">Backup</button>
+        <div style="flex:1"></div>
+        <button class="sub-btn back-btn" onclick="backToList()">← Zurück</button>
       </div>
-      <div class="log-box" id="logBox"></div>
-      <div class="cmd-row">
-        <input type="text" id="cmdInput" placeholder="Befehl eingeben..." onkeydown="if(event.key==='Enter')sendCommand()">
-        <button class="btn btn-ghost" onclick="sendCommand()">Senden</button>
-        <button class="btn btn-ghost" onclick="clearLog()">Leeren</button>
-      </div>
-    </div>
 
-    <!-- RCON -->
-    <div class="tab" id="tab-rcon">
-      <h2>RCON</h2>
-      <div class="card">
-        <h3>Verbindung</h3>
-        <div class="row">
-          <div class="col"><label>Host</label><input type="text" id="rconHost" value="localhost" style="width:160px"></div>
-          <div class="col"><label>Port</label><input type="number" id="rconPort" value="25575" style="width:100px"></div>
-          <div class="col"><label>Passwort</label><input type="password" id="rconPass" placeholder="rcon.password" style="width:180px"></div>
-          <button class="btn btn-primary" onclick="rconConnect()" style="margin-bottom:0">Verbinden</button>
-        </div>
-      </div>
-      <div class="log-box" id="rconLog" style="flex:1"></div>
-      <div class="cmd-row">
-        <input type="text" id="rconCmd" placeholder="RCON-Befehl..." onkeydown="if(event.key==='Enter')rconSend()">
-        <button class="btn btn-ghost" onclick="rconSend()">Senden</button>
-      </div>
-    </div>
-
-    <!-- PROPERTIES -->
-    <div class="tab" id="tab-props">
-      <h2>server.properties</h2>
-      <div class="row" style="flex-shrink:0">
-        <button class="btn btn-ghost" onclick="loadProps()">↻ Laden</button>
-        <button class="btn btn-success" onclick="saveProps()">✓ Speichern</button>
-      </div>
-      <div class="props-grid" id="propsGrid">
-        <p style="color:var(--muted);font-size:13px">Server auswählen und auf Laden klicken.</p>
-      </div>
-    </div>
-
-    <!-- MODS -->
-    <div class="tab" id="tab-mods">
-      <h2>Mods & Plugins</h2>
-      <div class="row" style="flex-shrink:0;align-items:center">
-        <button class="btn btn-ghost" onclick="scanMods()">↻ Scannen</button>
-        <input type="text" id="modSearch" placeholder="Suchen..." oninput="filterMods()" style="width:200px">
-        <select id="modFilterLoader" oninput="filterMods()" style="width:140px">
-          <option value="">Alle Loader</option>
-          <option value="Fabric">Fabric</option>
-          <option value="Forge">Forge</option>
-          <option value="NeoForge">NeoForge</option>
-          <option value="Paper">Paper</option>
-          <option value="Quilt">Quilt</option>
-          <option value="Unknown">Unbekannt</option>
-        </select>
-        <span id="modCount" style="font-size:12px;color:var(--muted);margin-left:4px"></span>
-      </div>
-      <div class="mod-grid" id="modGrid">
-        <p style="color:var(--muted);font-size:13px">Server auswählen und auf Scannen klicken.</p>
-      </div>
-    </div>
-
-    <!-- BACKUP -->
-    <div class="tab" id="tab-backup">
-      <h2>Backup</h2>
-      <div class="card">
-        <h3>Backup-Ziel</h3>
-        <div class="path-row">
-          <input type="text" id="backupPath" placeholder="Backup-Ordner auswählen..." readonly>
-          <button class="btn btn-ghost" onclick="selectBackupFolder()">Durchsuchen</button>
-        </div>
-      </div>
-      <div class="card" style="display:flex;flex-direction:column;gap:10px">
-        <h3>Jetzt sichern</h3>
-        <p style="font-size:13px;color:var(--muted)">Erstellt eine vollständige Kopie des aktiven Server-Ordners mit Zeitstempel.</p>
-        <div><button class="btn btn-success" onclick="createBackup()">◫ Backup erstellen</button></div>
-      </div>
-      <div class="log-box" id="backupLog" style="max-height:160px;flex:none"></div>
-    </div>
-
-    <!-- DOWNLOAD -->
-    <div class="tab" id="tab-download">
-      <h2>Server herunterladen</h2>
-      <div class="card">
-        <h3>Loader & Version</h3>
-        <div class="row" style="align-items:flex-end">
-          <div class="col">
-            <label>Loader</label>
-            <select id="dlLoader" style="width:150px" onchange="loadDlVersions()">
-              <option value="vanilla">Vanilla</option>
-              <option value="paper">Paper</option>
-              <option value="fabric">Fabric</option>
-              <option value="forge">Forge</option>
-              <option value="neoforge">NeoForge</option>
-            </select>
+      <!-- ÜBERSICHT -->
+      <div class="sub-tab active" id="sub-overview">
+        <div style="display:flex;gap:16px;align-items:center;flex-shrink:0">
+          <div class="server-icon-wrap" onclick="changeServerIcon()" title="Icon ändern">
+            <img id="serverIconImg" src="" alt="" style="display:none;width:100%;height:100%;object-fit:cover;border-radius:10px">
+            <div id="serverIconPlaceholder" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;color:var(--muted)">
+              <span style="font-size:24px">🖼</span>
+              <span style="font-size:10px;font-weight:600;letter-spacing:0.04em">ICON</span>
+            </div>
           </div>
-          <div class="col">
-            <label>Minecraft-Version</label>
-            <select id="dlVersion" style="width:160px" onchange="loadDlBuilds()">
-              <option>– laden –</option>
-            </select>
+          <div style="display:flex;flex-direction:column;gap:6px;flex:1">
+            <div style="display:flex;gap:12px;align-items:center">
+              <div class="status-dot" id="detailDot"></div>
+              <h2 id="detailName">Server</h2>
+              <span id="detailStatus" style="font-size:13px;color:var(--muted)">Gestoppt</span>
+              <div style="flex:1"></div>
+              <button class="btn btn-primary" id="detailBtnStart" onclick="startActiveServer()">▶ Starten</button>
+              <button class="btn btn-danger" id="detailBtnStop" onclick="stopActiveServer()" style="display:none">■ Stoppen</button>
+            </div>
+            <div id="addressBox" style="display:none;align-items:center;gap:10px;background:var(--bg1);border:1px solid var(--border);border-radius:10px;padding:10px 16px">
+              <span style="font-size:12px;color:var(--muted);font-weight:600;letter-spacing:0.05em">SERVER-ADRESSE</span>
+              <code id="addressText" style="font-family:'JetBrains Mono',monospace;font-size:14px;color:var(--accent2);flex:1"></code>
+              <button class="btn btn-ghost" style="padding:5px 12px;font-size:12px" onclick="copyAddress()">📋 Kopieren</button>
+            </div>
+            <div id="upnpBox" style="display:none;align-items:center;gap:10px;background:var(--bg1);border:1px solid var(--border);border-radius:10px;padding:10px 16px">
+              <span style="font-size:12px;color:var(--muted);font-weight:600;letter-spacing:0.05em">EXTERNE ADRESSE</span>
+              <code id="upnpText" style="font-family:'JetBrains Mono',monospace;font-size:14px;color:var(--accent);flex:1">—</code>
+              <span id="upnpStatus" style="font-size:11px;color:var(--muted)"></span>
+              <button class="btn btn-ghost" style="padding:5px 12px;font-size:12px" onclick="copyUpnpAddress()">📋 Kopieren</button>
+              <button class="btn btn-ghost" style="padding:5px 12px;font-size:12px" onclick="retryUpnp()">↻</button>
+            </div>
           </div>
-          <div class="col" id="dlBuildCol" style="display:none">
-            <label>Build</label>
-            <select id="dlBuild" style="width:160px">
-              <option>– laden –</option>
-            </select>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="card">
+            <h3>Server-Info</h3>
+            <div id="detailInfo" style="display:flex;flex-direction:column;gap:6px;font-size:13px;font-family:'JetBrains Mono',monospace;color:var(--muted)"></div>
           </div>
-          <button class="btn btn-ghost" onclick="loadDlVersions()" style="margin-bottom:0">↻</button>
+          <div class="card">
+            <h3>Diagnose</h3>
+            <div id="diagList" style="display:flex;flex-direction:column;gap:6px"></div>
+            <div style="margin-top:12px;display:flex;gap:8px">
+              <button class="btn btn-ghost" style="font-size:12px;padding:6px 12px" onclick="runDiagnosis()">↻ Prüfen</button>
+              <button class="btn btn-success" style="font-size:12px;padding:6px 12px" id="repairBtn" onclick="runRepair()">⚙ Reparieren</button>
+            </div>
+          </div>
         </div>
-      </div>
-
-      <div class="card">
-        <h3>Zielordner</h3>
-        <div class="path-row">
-          <input type="text" id="dlDestPath" placeholder="Ordner auswählen..." readonly>
-          <button class="btn btn-ghost" onclick="selectDlFolder()">Durchsuchen</button>
-        </div>
-      </div>
-
-      <div class="card" style="display:flex;flex-direction:column;gap:12px">
-        <button class="btn btn-primary" id="dlBtn" onclick="startDownload()" style="width:fit-content">↓ Herunterladen</button>
-        <div id="dlProgressWrap" style="display:none;flex-direction:column;gap:6px">
+        <div class="card" id="setupCard" style="display:none;flex-direction:column;gap:10px">
+          <h3>Server wird eingerichtet...</h3>
           <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted)">
-            <span id="dlStatusText">Wird heruntergeladen...</span>
-            <span id="dlPct">0%</span>
+            <span id="setupStatus">JAR wird heruntergeladen...</span>
+            <span id="setupPct">0%</span>
           </div>
           <div style="background:var(--bg2);border-radius:6px;height:6px;overflow:hidden">
-            <div id="dlBar" style="height:100%;width:0%;background:var(--accent);transition:width 0.2s;border-radius:6px"></div>
+            <div id="setupBar" style="height:100%;width:0%;background:var(--accent);transition:width 0.3s;border-radius:6px"></div>
           </div>
         </div>
-        <div id="dlResult" style="font-size:13px;display:none"></div>
+      </div>
+
+      <!-- STATS -->
+      <div class="sub-tab" id="sub-stats">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-shrink:0">
+          <h2>Server Stats</h2>
+          <div style="display:flex;align-items:center;gap:10px">
+            <span id="statsStatus" style="font-size:12px;color:var(--muted)">Nicht aktiv</span>
+            <div class="status-dot" id="statsDot"></div>
+            <button class="btn btn-ghost" style="padding:5px 12px;font-size:12px" onclick="openExportStats()">↓ Exportieren</button>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;flex-shrink:0">
+          <div class="stat-card"><div class="stat-label">RAM</div><div class="stat-value" id="statRam">—</div><div class="stat-sub" id="statRamSub">von 0 MB</div></div>
+          <div class="stat-card"><div class="stat-label">CPU</div><div class="stat-value" id="statCpu">—</div><div class="stat-sub">Java-Prozess</div></div>
+          <div class="stat-card"><div class="stat-label">TPS</div><div class="stat-value" id="statTps">—</div><div class="stat-sub">Ziel: 20.0</div></div>
+          <div class="stat-card"><div class="stat-label">Spieler</div><div class="stat-value" id="statPlayers">—</div><div class="stat-sub" id="statPlayersSub">online</div></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;flex:1;min-height:0">
+          <div class="card chart-card" style="display:flex;flex-direction:column;gap:8px;overflow:hidden" ondblclick="openChartFull('ram')">
+            <div style="display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0">RAM-Verlauf</h3><span style="font-size:10px;color:var(--muted)">Doppelklick für Vollansicht</span></div>
+            <div style="position:relative;flex:1;min-height:0"><canvas id="chartRam" style="width:100%;height:100%"></canvas><div id="tooltipRam" class="chart-tooltip"></div></div>
+          </div>
+          <div class="card chart-card" style="display:flex;flex-direction:column;gap:8px;overflow:hidden" ondblclick="openChartFull('cpu')">
+            <div style="display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0">CPU-Verlauf</h3><span style="font-size:10px;color:var(--muted)">Doppelklick für Vollansicht</span></div>
+            <div style="position:relative;flex:1;min-height:0"><canvas id="chartCpu" style="width:100%;height:100%"></canvas><div id="tooltipCpu" class="chart-tooltip"></div></div>
+          </div>
+          <div class="card chart-card" style="display:flex;flex-direction:column;gap:8px;overflow:hidden" ondblclick="openChartFull('tps')">
+            <div style="display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0">TPS-Verlauf</h3><span style="font-size:10px;color:var(--muted)">Doppelklick für Vollansicht</span></div>
+            <div style="position:relative;flex:1;min-height:0"><canvas id="chartTps" style="width:100%;height:100%"></canvas><div id="tooltipTps" class="chart-tooltip"></div></div>
+          </div>
+          <div class="card" style="display:flex;flex-direction:column;gap:8px;overflow:hidden">
+            <h3 style="margin:0">Spieler-Joins</h3>
+            <div id="joinLog" style="overflow-y:auto;flex:1;min-height:0;display:flex;flex-direction:column;gap:4px"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- LOGS -->
+      <div class="sub-tab" id="sub-logs">
+        <h2>Logs</h2>
+        <div class="log-box" id="logBox"></div>
+        <div class="cmd-row">
+          <input type="text" id="cmdInput" placeholder="Befehl eingeben...">
+          <button class="btn btn-ghost" onclick="sendCommand()">Senden</button>
+          <button class="btn btn-ghost" onclick="clearLog()">Leeren</button>
+        </div>
+      </div>
+
+      <!-- RCON & SPIELER -->
+      <div class="sub-tab" id="sub-rcon">
+        <h2>RCON & Spieler</h2>
+        <div class="card" style="flex-shrink:0">
+          <h3>Verbindung</h3>
+          <div class="row">
+            <div class="col"><label>Host</label><input type="text" id="rconHost" value="localhost" style="width:150px"></div>
+            <div class="col"><label>Port</label><input type="number" id="rconPort" value="25575" style="width:90px"></div>
+            <div class="col"><label>Passwort</label><input type="password" id="rconPass" placeholder="rcon.password" style="width:170px"></div>
+            <button class="btn btn-primary" onclick="rconConnect()" style="margin-bottom:0">Verbinden</button>
+          </div>
+        </div>
+        <div style="display:flex;gap:12px;flex:1;min-height:0;overflow:hidden">
+          <div style="display:flex;flex-direction:column;gap:8px;width:240px;flex-shrink:0">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <h3 style="margin:0">Online</h3>
+              <button class="btn btn-ghost" style="padding:4px 10px;font-size:11px" onclick="refreshPlayers()">↻</button>
+            </div>
+            <div id="playerList" style="display:flex;flex-direction:column;gap:6px;overflow-y:auto;flex:1;min-height:0"><p style="font-size:12px;color:var(--muted)">RCON verbinden.</p></div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:8px;flex:1;min-height:0">
+            <h3 style="margin:0">Konsole</h3>
+            <div class="log-box" id="rconLog" style="flex:1"></div>
+            <div class="cmd-row">
+              <input type="text" id="rconCmd" placeholder="RCON-Befehl...">
+              <button class="btn btn-ghost" onclick="rconSend()">Senden</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- FILES -->
+      <div class="sub-tab" id="sub-files" style="padding:0;overflow:hidden">
+        <div style="display:flex;flex:1;min-height:0;overflow:hidden">
+          <div style="display:flex;flex-direction:column;width:280px;flex-shrink:0;border-right:1px solid var(--border);padding:16px;gap:10px">
+            <div style="display:flex;gap:6px;align-items:center">
+              <h2 style="flex:1;font-size:15px">Files</h2>
+              <button class="btn btn-ghost" style="padding:5px 10px;font-size:11px" onclick="scanFiles()" title="Aktualisieren">↻</button>
+              <button class="btn btn-ghost" style="padding:5px 10px;font-size:11px" onclick="createNewFile()" title="Neue Datei">📄+</button>
+              <button class="btn btn-ghost" style="padding:5px 10px;font-size:11px" onclick="createNewFolder()" title="Neuer Ordner">📁+</button>
+            </div>
+            <div class="file-breadcrumb" id="fileBreadcrumb" style="font-size:11px;word-break:break-all"></div>
+            <div class="file-list" id="fileList" style="flex:1"><p style="color:var(--muted);font-size:13px">Auf ↻ klicken.</p></div>
+          </div>
+          <div style="display:flex;flex-direction:column;flex:1;min-width:0" id="editorPanel">
+            <div style="display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--bg1)">
+              <span id="editorFilename" style="font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--muted);flex:1">Keine Datei geöffnet</span>
+              <button class="btn btn-success" style="padding:5px 14px;font-size:12px" id="editorSaveBtn" onclick="saveEditorFile()" disabled>✓ Speichern</button>
+              <button class="btn btn-ghost" style="padding:5px 14px;font-size:12px" id="editorCloseBtn" onclick="closeEditor()" disabled>✕</button>
+            </div>
+            <textarea id="editorArea" style="flex:1;background:var(--bg0);color:var(--text);font-family:'JetBrains Mono',monospace;font-size:13px;line-height:1.7;padding:16px;border:none;outline:none;resize:none;tab-size:2;white-space:pre;overflow:auto;user-select:text" placeholder="Klicke eine Textdatei im Browser an um sie zu öffnen..." spellcheck="false"></textarea>
+          </div>
+        </div>
+        <div id="fileContextMenu" style="display:none;position:fixed;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:4px;z-index:500;min-width:150px;box-shadow:0 8px 24px rgba(0,0,0,0.4)">
+          <div class="ctx-item" onclick="ctxRename()">✎ Umbenennen</div>
+          <div class="ctx-item ctx-danger" onclick="ctxDelete()">✕ Löschen</div>
+        </div>
+      </div>
+
+      <!-- MODS -->
+      <div class="sub-tab" id="sub-mods" style="padding:0;overflow:hidden;flex-direction:column">
+        <div style="display:flex;gap:0;flex-shrink:0;border-bottom:1px solid var(--border);padding:0 16px;background:var(--bg1)">
+          <button class="browser-tab active" id="btnModInstalled" onclick="switchModView('installed', this)">📦 Installiert</button>
+          <button class="browser-tab" id="btnModDiscover" onclick="switchModView('discover', this)">🔍 Entdecken</button>
+        </div>
+
+        <!-- INSTALLIERT -->
+        <div id="modViewInstalled" style="display:flex;flex:1;min-height:0;overflow:hidden;padding:14px;gap:12px">
+          <!-- Mods -->
+          <div style="display:flex;flex-direction:column;flex:1;min-width:0;gap:8px">
+            <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+              <h2 style="font-size:14px;flex:1;font-weight:700">Mods</h2>
+              <button class="btn btn-ghost" style="padding:4px 8px;font-size:11px" onclick="scanMods()">↻</button>
+              <span id="modCount" style="font-size:11px;color:var(--muted)"></span>
+            </div>
+            <div style="position:relative;flex-shrink:0">
+              <input type="text" id="modSearch" placeholder="Suchen..." oninput="filterMods();toggleClearBtn('modSearch','modSearchClear')" style="width:100%;padding-right:24px;font-size:12px">
+              <button id="modSearchClear" onclick="clearInput('modSearch','modSearchClear');filterMods()" style="display:none;position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--muted);cursor:pointer;font-size:12px;padding:0;line-height:1">✕</button>
+            </div>
+            <div class="mod-list" id="modGrid" style="flex:1;min-height:0"><p style="color:var(--muted);font-size:12px">Wird geladen...</p></div>
+          </div>
+          <div style="width:1px;background:var(--border);flex-shrink:0"></div>
+          <!-- Plugins -->
+          <div style="display:flex;flex-direction:column;flex:1;min-width:0;gap:8px">
+            <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+              <h2 style="font-size:14px;flex:1;font-weight:700">Plugins</h2>
+              <button class="btn btn-ghost" style="padding:4px 8px;font-size:11px" onclick="scanPlugins()">↻</button>
+              <span id="pluginCount" style="font-size:11px;color:var(--muted)"></span>
+            </div>
+            <div style="position:relative;flex-shrink:0">
+              <input type="text" id="pluginSearch" placeholder="Suchen..." oninput="filterPlugins();toggleClearBtn('pluginSearch','pluginSearchClear')" style="width:100%;padding-right:24px;font-size:12px">
+              <button id="pluginSearchClear" onclick="clearInput('pluginSearch','pluginSearchClear');filterPlugins()" style="display:none;position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--muted);cursor:pointer;font-size:12px;padding:0;line-height:1">✕</button>
+            </div>
+            <div class="mod-list" id="pluginGrid" style="flex:1;min-height:0"><p style="color:var(--muted);font-size:12px">Wird geladen...</p></div>
+          </div>
+          <div style="width:1px;background:var(--border);flex-shrink:0"></div>
+          <!-- Resourcepacks -->
+          <div style="display:flex;flex-direction:column;flex:1;min-width:0;gap:8px">
+            <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+              <h2 style="font-size:14px;flex:1;font-weight:700">Resourcepacks</h2>
+              <button class="btn btn-ghost" style="padding:4px 8px;font-size:11px" onclick="scanResourcepacks()">↻</button>
+              <span id="rpCount" style="font-size:11px;color:var(--muted)"></span>
+            </div>
+            <div style="position:relative;flex-shrink:0">
+              <input type="text" id="rpSearch" placeholder="Suchen..." oninput="filterResourcepacks();toggleClearBtn('rpSearch','rpSearchClear')" style="width:100%;padding-right:24px;font-size:12px">
+              <button id="rpSearchClear" onclick="clearInput('rpSearch','rpSearchClear');filterResourcepacks()" style="display:none;position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--muted);cursor:pointer;font-size:12px;padding:0;line-height:1">✕</button>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--bg2);border-radius:6px;flex-shrink:0">
+              <span style="font-size:11px;color:var(--muted);flex:1">Forced Pack</span>
+              <label class="toggle-wrap" style="margin:0">
+                <input type="checkbox" id="rpForceToggle" class="prop-toggle" onchange="toggleForcedResourcepack(this.checked)">
+                <span class="toggle-track"><span class="toggle-thumb"></span></span>
+              </label>
+            </div>
+            <div class="mod-list" id="rpGrid" style="flex:1;min-height:0"><p style="color:var(--muted);font-size:12px">Wird geladen...</p></div>
+          </div>
+        </div>
+
+        <!-- ENTDECKEN -->
+        <div id="modViewDiscoverPanel" style="display:none;flex-direction:column;flex:1;min-height:0;overflow:hidden;padding:14px;gap:10px">
+          <div style="display:flex;gap:0;flex-shrink:0;border-bottom:1px solid var(--border)">
+            <button class="browser-tab active" id="btabModrinth" onclick="switchBrowserTab('modrinth', this)">Modrinth</button>
+            <button class="browser-tab" id="btabHangar" onclick="switchBrowserTab('hangar', this)">Hangar (Paper)</button>
+          </div>
+          <!-- Modrinth -->
+          <div id="browserModrinth" style="display:flex;flex-direction:column;gap:8px;flex:1;min-height:0;overflow:hidden">
+            <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;flex-wrap:wrap">
+              <div style="position:relative;flex:1;min-width:160px">
+                <input type="text" id="mrSearch" placeholder="Suchen..." oninput="onMrInput()" onkeydown="if(event.key==='Enter'){clearTimeout(mrSearchTimer);mrPage=0;searchModrinth();}" style="width:100%;padding-right:24px;font-size:12px">
+                <button id="mrSearchClear" onclick="clearInput('mrSearch','mrSearchClear');mrPage=0;searchModrinth()" style="display:none;position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--muted);cursor:pointer;font-size:12px;padding:0;line-height:1">✕</button>
+              </div>
+              <select id="mrType" style="width:110px;font-size:12px" onchange="searchModrinth()">
+                <option value="mod">Mods</option>
+                <option value="plugin">Plugins</option>
+                <option value="resourcepack">Resourcepacks</option>
+                <option value="shader">Shader</option>
+              </select>
+              <select id="mrLoader" style="width:115px;font-size:12px" onchange="searchModrinth()">
+                <option value="">Alle Loader</option>
+                <option value="fabric">Fabric</option>
+                <option value="forge">Forge</option>
+                <option value="neoforge">NeoForge</option>
+                <option value="paper">Paper</option>
+                <option value="quilt">Quilt</option>
+              </select>
+              <input type="text" id="mrVersion" placeholder="Version" style="width:80px;font-size:12px" onkeydown="if(event.key==='Enter')searchModrinth()">
+              <button class="btn btn-primary" style="padding:8px 12px;font-size:12px" onclick="searchModrinth()">Suchen</button>
+            </div>
+            <div id="mrResults" class="mr-grid" style="flex:1;min-height:0"><p style="color:var(--muted);font-size:13px;grid-column:1/-1">Wird geladen...</p></div>
+            <div id="mrPagination" class="mr-pagination"></div>
+            <div id="mrInstallStatus" style="display:none;font-size:12px;padding:8px 12px;background:var(--bg1);border:1px solid var(--border);border-radius:8px;flex-shrink:0"></div>
+          </div>
+          <!-- Hangar -->
+          <div id="browserHangar" style="display:none;flex-direction:column;gap:8px;flex:1;min-height:0;overflow:hidden">
+            <div style="display:flex;gap:6px;align-items:center;flex-shrink:0">
+              <div style="position:relative;flex:1">
+                <input type="text" id="hangarSearch" placeholder="Plugin suchen..." oninput="toggleClearBtn('hangarSearch','hangarSearchClear')" onkeydown="if(event.key==='Enter')searchHangar()" style="width:100%;padding-right:24px;font-size:12px">
+                <button id="hangarSearchClear" onclick="clearInput('hangarSearch','hangarSearchClear');searchHangar()" style="display:none;position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--muted);cursor:pointer;font-size:12px;padding:0;line-height:1">✕</button>
+              </div>
+              <select id="hangarPlatform" style="width:100px;font-size:12px" onchange="searchHangar()">
+                <option value="PAPER">Paper</option>
+                <option value="WATERFALL">Waterfall</option>
+                <option value="VELOCITY">Velocity</option>
+              </select>
+              <button class="btn btn-primary" style="padding:8px 12px;font-size:12px" onclick="searchHangar()">Suchen</button>
+            </div>
+            <div id="hangarResults" class="mr-grid" style="flex:1;min-height:0"><p style="color:var(--muted);font-size:13px;grid-column:1/-1">Wird geladen...</p></div>
+            <div id="hangarInstallStatus" style="display:none;font-size:12px;padding:8px 12px;background:var(--bg1);border:1px solid var(--border);border-radius:8px;flex-shrink:0"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- WHITELIST -->
+      <div class="sub-tab" id="sub-whitelist">
+        <h2>Whitelist & Blacklist</h2>
+        <div style="display:flex;gap:12px;flex:1;min-height:0;overflow:hidden">
+          <div class="card" style="flex:1;display:flex;flex-direction:column;gap:10px;overflow:hidden">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <h3 style="margin:0">Whitelist</h3>
+              <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="loadWhitelist()">↻</button>
+            </div>
+            <div class="cmd-row">
+              <input type="text" id="wlInput" placeholder="Spielername...">
+              <button class="btn btn-success" style="font-size:12px;padding:6px 12px" onclick="addToWhitelist()">+ Hinzufügen</button>
+            </div>
+            <div id="whitelistEntries" style="display:flex;flex-direction:column;gap:6px;overflow-y:auto;flex:1;min-height:0"><p style="font-size:12px;color:var(--muted)">Laden klicken.</p></div>
+          </div>
+          <div class="card" style="flex:1;display:flex;flex-direction:column;gap:10px;overflow:hidden">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <h3 style="margin:0">Banliste</h3>
+              <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="loadBanlist()">↻</button>
+            </div>
+            <div class="cmd-row">
+              <input type="text" id="banInput" placeholder="Spielername...">
+              <button class="btn btn-danger" style="font-size:12px;padding:6px 12px" onclick="addToBanlist()">+ Bannen</button>
+            </div>
+            <div id="banlistEntries" style="display:flex;flex-direction:column;gap:6px;overflow-y:auto;flex:1;min-height:0"><p style="font-size:12px;color:var(--muted)">Laden klicken.</p></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SERVER-EINSTELLUNGEN -->
+      <div class="sub-tab" id="sub-serversettings">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-shrink:0">
+          <h2>Server-Einstellungen</h2>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-ghost" onclick="loadProps()">↻ Laden</button>
+            <button class="btn btn-success" onclick="saveProps()">✓ Speichern</button>
+          </div>
+        </div>
+        <div id="propsGrid" style="display:flex;flex-direction:column;gap:14px;overflow-y:auto;flex:1;min-height:0"><p style="color:var(--muted);font-size:13px">Wird geladen...</p></div>
+      </div>
+
+      <!-- BACKUP -->
+      <div class="sub-tab" id="sub-backup">
+        <h2>Backup</h2>
+        <div class="card" style="flex-shrink:0">
+          <h3>Backup-Ziel</h3>
+          <div class="path-row">
+            <input type="text" id="backupPath" placeholder="Backup-Ordner auswählen..." readonly>
+            <button class="btn btn-ghost" onclick="selectBackupFolder()">Durchsuchen</button>
+          </div>
+        </div>
+        <div class="card" style="flex-shrink:0;display:flex;flex-direction:column;gap:10px">
+          <h3>Jetzt sichern</h3>
+          <p style="font-size:13px;color:var(--muted)">Erstellt eine vollständige Kopie des Server-Ordners mit Zeitstempel.</p>
+          <div><button class="btn btn-success" onclick="createBackup()">◫ Backup erstellen</button></div>
+        </div>
+        <div class="log-box" id="backupLog" style="max-height:160px;flex:none"></div>
+      </div>
+
+    </div><!-- end main-detail -->
+
+    <!-- ══ EINSTELLUNGEN ══ -->
+    <div class="main-tab" id="main-settings">
+      <div style="padding:24px">
+        <h2>Einstellungen</h2>
+        <p style="color:var(--muted);font-size:13px;margin-top:12px">Farbauswahl, Hotkeys und weitere Optionen folgen hier.</p>
       </div>
     </div>
 
   </main>
 </div>
 
-<!-- ADD SERVER MODAL -->
+<!-- ADD/EDIT SERVER MODAL -->
 <div id="modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:200;align-items:center;justify-content:center">
-  <div class="card" style="width:480px;display:flex;flex-direction:column;gap:14px">
+  <div class="card" style="width:520px;display:flex;flex-direction:column;gap:14px">
     <h2 id="modalTitle">Server hinzufügen</h2>
     <div class="col">
       <label>Name</label>
       <input type="text" id="srvName" placeholder="Mein Server">
     </div>
     <div class="col">
-      <label>Server-Ordner</label>
+      <label>Speicherort (übergeordneter Ordner)</label>
       <div class="path-row">
         <input type="text" id="srvPath" placeholder="Ordner auswählen..." readonly>
         <button class="btn btn-ghost" onclick="selectSrvFolder()">Durchsuchen</button>
       </div>
-    </div>
-    <div class="row">
-      <div class="col">
-        <label>JAR-Datei</label>
-        <input type="text" id="srvJar" value="server.jar" style="width:160px">
-      </div>
-      <div class="col">
-        <label>RAM (MB)</label>
-        <input type="number" id="srvRam" value="2048" min="512" max="32768" style="width:110px">
-      </div>
+      <span style="font-size:11px;color:var(--muted);margin-top:2px">Ein Unterordner mit dem Server-Namen wird automatisch erstellt.</span>
     </div>
     <div class="row">
       <div class="col">
@@ -228,14 +435,124 @@
           <option value="purpur">Purpur</option>
         </select>
       </div>
+      <div class="col">
+        <label>RAM (MB)</label>
+        <input type="number" id="srvRam" value="2048" min="512" max="32768" style="width:100px">
+      </div>
+    </div>
+    <div class="col">
+      <label>Sichtbarkeit</label>
+      <div style="display:flex;gap:8px;margin-top:4px">
+        <label style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;cursor:pointer;flex:1;transition:border-color 0.2s" id="visLanLabel">
+          <input type="radio" name="srvVisibility" value="lan" id="visLan" checked style="accent-color:var(--accent)">
+          <div><div style="font-size:12px;font-weight:700">🏠 Nur LAN</div><div style="font-size:10px;color:var(--muted)">Nur lokales Netzwerk</div></div>
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;cursor:pointer;flex:1;transition:border-color 0.2s" id="visPublicLabel">
+          <input type="radio" name="srvVisibility" value="public" id="visPublic" style="accent-color:var(--accent)">
+          <div><div style="font-size:12px;font-weight:700">🌍 Öffentlich</div><div style="font-size:10px;color:var(--muted)">UPnP Port Forwarding</div></div>
+        </label>
+      </div>
+    </div>
+    <div id="modalDlWrap" style="display:none;flex-direction:column;gap:6px">
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted)">
+        <span id="modalDlStatus">JAR wird heruntergeladen...</span>
+        <span id="modalDlPct">0%</span>
+      </div>
+      <div style="background:var(--bg2);border-radius:6px;height:6px;overflow:hidden">
+        <div id="modalDlBar" style="height:100%;width:0%;background:var(--accent);transition:width 0.2s;border-radius:6px"></div>
+      </div>
     </div>
     <div class="row" style="justify-content:flex-end;margin-top:4px">
-      <button class="btn btn-ghost" onclick="closeModal()">Abbrechen</button>
-      <button class="btn btn-primary" onclick="saveServer()">Speichern</button>
+      <button class="btn btn-ghost" id="modalCancelBtn" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-primary" id="modalSaveBtn" onclick="saveServer()">Erstellen & Herunterladen</button>
     </div>
   </div>
 </div>
 
-<div id="toast"></div>
+<!-- EULA MODAL -->
+<div id="eulaModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:300;align-items:center;justify-content:center">
+  <div class="card" style="width:500px;display:flex;flex-direction:column;gap:16px">
+    <h2>⚠ EULA nicht akzeptiert</h2>
+    <p style="font-size:13px;color:var(--muted);line-height:1.7">Der Minecraft-Server kann nicht starten, weil die EULA von Mojang noch nicht akzeptiert wurde.<br><br>Mit dem Klick auf "Akzeptieren" bestätigst du, dass du die <a href="https://aka.ms/MinecraftEULA" style="color:var(--accent)">Minecraft EULA</a> gelesen hast und ihr zustimmst.</p>
+    <div class="row" style="justify-content:flex-end">
+      <button class="btn btn-ghost" onclick="closeEulaModal()">Abbrechen</button>
+      <button class="btn btn-primary" onclick="acceptEula()">✓ Akzeptieren & Starten</button>
+    </div>
+  </div>
+</div>
+
+<!-- CUSTOM CONFIRM MODAL -->
+<div id="confirmModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000;align-items:center;justify-content:center">
+  <div class="card" style="width:400px;display:flex;flex-direction:column;gap:16px">
+    <h2 id="confirmTitle" style="font-size:16px">Bestätigung</h2>
+    <p id="confirmMsg" style="font-size:13px;color:var(--muted);line-height:1.6"></p>
+    <div class="row" style="justify-content:flex-end">
+      <button class="btn btn-ghost" id="confirmCancel">Abbrechen</button>
+      <button class="btn btn-danger" id="confirmOk">Bestätigen</button>
+    </div>
+  </div>
+</div>
+
+<!-- CUSTOM PROMPT MODAL -->
+<div id="promptModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000;align-items:center;justify-content:center">
+  <div class="card" style="width:420px;display:flex;flex-direction:column;gap:14px">
+    <h2 id="promptTitle" style="font-size:16px">Eingabe</h2>
+    <div class="col">
+      <label id="promptLabel"></label>
+      <input type="text" id="promptInput" style="width:100%">
+    </div>
+    <div class="row" style="justify-content:flex-end">
+      <button class="btn btn-ghost" id="promptCancel">Abbrechen</button>
+      <button class="btn btn-primary" id="promptOk">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- CHART VOLLANSICHT -->
+<div id="chartFullModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:900;flex-direction:column;padding:32px;gap:16px">
+  <div style="display:flex;align-items:center;gap:16px;flex-shrink:0">
+    <h2 id="chartFullTitle" style="font-size:20px"></h2>
+    <div style="flex:1"></div>
+    <button class="btn btn-ghost" onclick="closeChartFull()">✕ Schließen</button>
+  </div>
+  <div style="position:relative;flex:1;min-height:0;background:var(--bg1);border:1px solid var(--border);border-radius:12px;padding:16px">
+    <canvas id="chartFullCanvas" style="width:100%;height:100%"></canvas>
+    <div id="tooltipFull" class="chart-tooltip"></div>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;flex-shrink:0">
+    <div class="stat-card" style="padding:10px 14px"><div class="stat-label">Minimum</div><div class="stat-value" id="fullStatMin" style="font-size:20px">—</div></div>
+    <div class="stat-card" style="padding:10px 14px"><div class="stat-label">Maximum</div><div class="stat-value" id="fullStatMax" style="font-size:20px">—</div></div>
+    <div class="stat-card" style="padding:10px 14px"><div class="stat-label">Durchschnitt</div><div class="stat-value" id="fullStatAvg" style="font-size:20px">—</div></div>
+    <div class="stat-card" style="padding:10px 14px"><div class="stat-label">Aktuell</div><div class="stat-value" id="fullStatCurrent" style="font-size:20px">—</div></div>
+    <div class="stat-card" style="padding:10px 14px"><div class="stat-label">Trend</div><div class="stat-value" id="fullStatTrend" style="font-size:20px">—</div></div>
+  </div>
+</div>
+
+<!-- EXPORT STATS -->
+<div id="exportModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000;align-items:center;justify-content:center">
+  <div class="card" style="width:460px;display:flex;flex-direction:column;gap:14px">
+    <h2 style="font-size:16px">Stats exportieren</h2>
+    <div class="row">
+      <div class="col"><label>Von</label><input type="date" id="exportFrom" style="width:160px"></div>
+      <div class="col"><label>Bis</label><input type="date" id="exportTo" style="width:160px"></div>
+    </div>
+    <div class="col">
+      <label>Datentypen</label>
+      <div style="display:flex;gap:10px;margin-top:4px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:400"><input type="checkbox" id="expRam" checked> RAM</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:400"><input type="checkbox" id="expCpu" checked> CPU</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:400"><input type="checkbox" id="expTps" checked> TPS</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:400"><input type="checkbox" id="expJoins" checked> Spieler-Joins</label>
+      </div>
+    </div>
+    <div class="col"><label>Format</label><select id="exportFormat" style="width:140px"><option value="json">JSON</option><option value="csv">CSV</option></select></div>
+    <div class="row" style="justify-content:flex-end">
+      <button class="btn btn-ghost" onclick="closeExportModal()">Abbrechen</button>
+      <button class="btn btn-primary" onclick="doExportStats()">↓ Exportieren</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
 </body>
 </html>

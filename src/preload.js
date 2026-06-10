@@ -4,6 +4,8 @@ contextBridge.exposeInMainWorld('mc', {
   // Ordner
   selectFolder:   ()        => ipcRenderer.invoke('select-folder'),
 
+  createServerFolder: (opts) => ipcRenderer.invoke('create-server-folder', opts),
+
   // Server-Liste
   serversLoad:    ()        => ipcRenderer.invoke('servers-load'),
   serversSave:    (list)    => ipcRenderer.invoke('servers-save', list),
@@ -28,6 +30,68 @@ contextBridge.exposeInMainWorld('mc', {
 
   // Backup
   backupCreate:   (opts)    => ipcRenderer.invoke('backup-create', opts),
+
+  getStats:       (id)      => ipcRenderer.invoke('get-stats', id),
+  getLocalIp:     ()        => ipcRenderer.invoke('get-local-ip'),
+
+  // Diagnose & Reparatur
+  diagnose:       (p, j)    => ipcRenderer.invoke('diagnose', p, j),
+  repair:         (opts)    => ipcRenderer.invoke('repair', opts),
+
+  // UPnP Port Forwarding
+  upnpMap:     (opts) => ipcRenderer.invoke('upnp-map', opts),
+  upnpUnmap:   (opts) => ipcRenderer.invoke('upnp-unmap', opts),
+  upnpStatus:  (opts) => ipcRenderer.invoke('upnp-status', opts),
+
+  // Server Icon
+  iconSelect:     (p)       => ipcRenderer.invoke('icon-select', p),
+  iconLoad:       (p)       => ipcRenderer.invoke('icon-load', p),
+
+  // Resourcepacks
+  rpScan:         (p)       => ipcRenderer.invoke('rp-scan', p),
+  rpToggle:       (opts)    => ipcRenderer.invoke('rp-toggle', opts),
+  rpDelete:       (p)       => ipcRenderer.invoke('rp-delete', p),
+
+  // Prefs (Pfad-Persistenz)
+  prefsGet:       (k)       => ipcRenderer.invoke('prefs-get', k),
+  prefsSet:       (k, v)    => ipcRenderer.invoke('prefs-set', k, v),
+
+  // Stats-Persistenz
+  statsLoad:          (id)   => ipcRenderer.invoke('stats-load', id),
+  statsAppendPoint:   (opts) => ipcRenderer.invoke('stats-append-point', opts),
+  statsAppendJoin:    (opts) => ipcRenderer.invoke('stats-append-join', opts),
+  statsSaveFile:      (opts) => ipcRenderer.invoke('stats-save-file', opts),
+
+  // Hangar
+  hangarSearch:    (opts)   => ipcRenderer.invoke('hangar-search', opts),
+  hangarInstall:   (opts)   => ipcRenderer.invoke('hangar-install', opts),
+
+  // Modrinth
+  modrinthSearch:  (opts)   => ipcRenderer.invoke('modrinth-search', opts),
+  modrinthInstall: (opts)   => ipcRenderer.invoke('modrinth-install', opts),
+
+  // File Browser
+  filesList:      (p, r)    => ipcRenderer.invoke('files-list', p, r),
+  fileRead:       (p)       => ipcRenderer.invoke('file-read', p),
+  fileWrite:      (p, c)    => ipcRenderer.invoke('file-write', p, c),
+  fileDelete:     (p, d)    => ipcRenderer.invoke('file-delete', p, d),
+  fileRename:     (p, n)    => ipcRenderer.invoke('file-rename', p, n),
+  fileCreate:     (p, n, d) => ipcRenderer.invoke('file-create', p, n, d),
+
+  // Whitelist / Banlist
+  listRead:       (opts)    => ipcRenderer.invoke('list-read', opts),
+  listAdd:        (opts)    => ipcRenderer.invoke('list-add', opts),
+  listRemove:     (opts)    => ipcRenderer.invoke('list-remove', opts),
+
+  // EULA
+  eulaCheck:      (p)       => ipcRenderer.invoke('eula-check', p),
+  eulaAccept:     (p)       => ipcRenderer.invoke('eula-accept', p),
+
+  // Spieler
+  playersList:    (id)      => ipcRenderer.invoke('players-list', id),
+  playerKick:     (opts)    => ipcRenderer.invoke('player-kick', opts),
+  playerBan:      (opts)    => ipcRenderer.invoke('player-ban', opts),
+  playerOp:       (opts)    => ipcRenderer.invoke('player-op', opts),
 
   // Download
   dlVersions:     (loader)  => ipcRenderer.invoke('dl-versions', loader),
