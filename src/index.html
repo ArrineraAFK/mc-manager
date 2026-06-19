@@ -70,16 +70,30 @@
               <button class="btn btn-danger" id="detailBtnStop" onclick="stopActiveServer()" style="display:none">■ Stoppen</button>
             </div>
             <div id="addressBox" style="display:none;align-items:center;gap:10px;background:var(--bg1);border:1px solid var(--border);border-radius:10px;padding:10px 16px">
-              <span style="font-size:12px;color:var(--muted);font-weight:600;letter-spacing:0.05em">SERVER-ADRESSE</span>
-              <code id="addressText" style="font-family:'JetBrains Mono',monospace;font-size:14px;color:var(--accent2);flex:1"></code>
+              <span style="font-size:12px;color:var(--muted);font-weight:600;letter-spacing:0.05em">IP-ADRESSE</span>
+              <code id="addressText" style="font-family:'JetBrains Mono',monospace;font-size:14px;color:var(--accent2);flex:1">••••••••••••••</code>
+              <button class="btn btn-ghost" style="padding:5px 10px;font-size:12px" onclick="toggleReveal('addressText')">👁</button>
               <button class="btn btn-ghost" style="padding:5px 12px;font-size:12px" onclick="copyAddress()">📋 Kopieren</button>
             </div>
-            <div id="upnpBox" style="display:none;align-items:center;gap:10px;background:var(--bg1);border:1px solid var(--border);border-radius:10px;padding:10px 16px">
-              <span style="font-size:12px;color:var(--muted);font-weight:600;letter-spacing:0.05em">EXTERNE ADRESSE</span>
-              <code id="upnpText" style="font-family:'JetBrains Mono',monospace;font-size:14px;color:var(--accent);flex:1">—</code>
+            <div id="ipv6Box" style="display:none;align-items:center;gap:10px;background:var(--bg1);border:1px solid var(--border);border-radius:10px;padding:10px 16px">
+              <span style="font-size:12px;color:var(--muted);font-weight:600;letter-spacing:0.05em">IPv6-ADRESSE</span>
+              <code id="ipv6Text" style="font-family:'JetBrains Mono',monospace;font-size:14px;color:var(--accent);flex:1">••••••••••••••</code>
+              <button class="btn btn-ghost" style="padding:5px 10px;font-size:12px" onclick="toggleReveal('ipv6Text')">👁</button>
+              <button class="btn btn-ghost" style="padding:5px 12px;font-size:12px" onclick="copyIpv6Address()">📋 Kopieren</button>
+            </div><div id="upnpBox" style="display:none;align-items:center;gap:10px;background:var(--bg1);border:1px solid var(--border);border-radius:10px;padding:10px 16px">
+              <span style="font-size:12px;color:var(--muted);font-weight:600;letter-spacing:0.05em">EXTERNE ADRESSE (UPnP)</span>
+              <code id="upnpText" style="font-family:'JetBrains Mono',monospace;font-size:14px;color:var(--accent);flex:1">••••••••••••••</code>
+              <button class="btn btn-ghost" style="padding:5px 10px;font-size:12px" onclick="toggleReveal('upnpText')">👁</button>
               <span id="upnpStatus" style="font-size:11px;color:var(--muted)"></span>
               <button class="btn btn-ghost" style="padding:5px 12px;font-size:12px" onclick="copyUpnpAddress()">📋 Kopieren</button>
               <button class="btn btn-ghost" style="padding:5px 12px;font-size:12px" onclick="retryUpnp()">↻</button>
+            </div>
+            <div id="duckdnsBox" style="display:none;align-items:center;gap:10px;background:var(--bg1);border:1px solid var(--border);border-radius:10px;padding:10px 16px">
+              <span style="font-size:12px;color:var(--muted);font-weight:600;letter-spacing:0.05em">JOIN-ADRESSE</span>
+              <code id="duckdnsText" style="font-family:'JetBrains Mono',monospace;font-size:14px;color:var(--accent);flex:1">••••••••••••••</code>
+              <button class="btn btn-ghost" style="padding:5px 10px;font-size:12px" onclick="toggleReveal('duckdnsText')">👁</button>
+              <span id="duckdnsStatus" style="font-size:11px;color:var(--muted)"></span>
+              <button class="btn btn-ghost" style="padding:5px 12px;font-size:12px" onclick="copyDuckdnsAddress()">📋 Kopieren</button>
             </div>
           </div>
         </div>
@@ -96,6 +110,31 @@
               <button class="btn btn-success" style="font-size:12px;padding:6px 12px" id="repairBtn" onclick="runRepair()">⚙ Reparieren</button>
             </div>
           </div>
+          <div class="card">
+            <h3>Netzwerk</h3>
+            <div style="display:flex;gap:8px;margin-bottom:10px">
+              <label style="display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;cursor:pointer;flex:1">
+                <input type="radio" name="netVisibility" value="lan" id="netLan" style="accent-color:var(--accent)">
+                <span style="font-size:12px;font-weight:700">🏠 LAN</span>
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;cursor:pointer;flex:1">
+                <input type="radio" name="netVisibility" value="public" id="netPublic" style="accent-color:var(--accent)">
+                <span style="font-size:12px;font-weight:700">🌍 Öffentlich</span>
+              </label>
+            </div>
+            <div id="netPortRow" style="display:none;margin-bottom:10px">
+              <label style="font-size:11px">Port</label>
+              <input type="number" id="netPort" min="1" max="65535" placeholder="25565" style="width:100px;margin-top:4px">
+            </div>
+            <div id="netDdnsRow" style="display:none;flex-direction:column;gap:8px;margin-bottom:10px;padding-top:10px;border-top:1px solid var(--border)">
+              <label style="font-size:11px">DNS-Anbieter (optional)</label>
+              <select id="netDdnsProvider" style="font-size:12px" onchange="renderDdnsFields()">
+                <option value="">— Kein DNS —</option>
+              </select>
+              <div id="netDdnsFields" style="display:flex;flex-direction:column;gap:8px"></div>
+            </div>
+            <button class="btn btn-success" style="font-size:12px;padding:6px 12px" onclick="saveNetworkSettings()">✓ Speichern</button>
+          </div>
         </div>
         <div class="card" id="setupCard" style="display:none;flex-direction:column;gap:10px">
           <h3>Server wird eingerichtet...</h3>
@@ -110,7 +149,7 @@
       </div>
 
       <!-- STATS -->
-      <div class="sub-tab" id="sub-stats">
+      <div class="sub-tab active"  id="sub-stats" style="overflow-y:auto">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-shrink:0">
           <h2>Server Stats</h2>
           <div style="display:flex;align-items:center;gap:10px">
@@ -453,17 +492,8 @@
         </label>
       </div>
     </div>
-    <div id="modalDlWrap" style="display:none;flex-direction:column;gap:6px">
-      <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted)">
-        <span id="modalDlStatus">JAR wird heruntergeladen...</span>
-        <span id="modalDlPct">0%</span>
-      </div>
-      <div style="background:var(--bg2);border-radius:6px;height:6px;overflow:hidden">
-        <div id="modalDlBar" style="height:100%;width:0%;background:var(--accent);transition:width 0.2s;border-radius:6px"></div>
-      </div>
-    </div>
     <div class="row" style="justify-content:flex-end;margin-top:4px">
-      <button class="btn btn-ghost" id="modalCancelBtn" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-ghost" onclick="closeModal()">Abbrechen</button>
       <button class="btn btn-primary" id="modalSaveBtn" onclick="saveServer()">Erstellen & Herunterladen</button>
     </div>
   </div>

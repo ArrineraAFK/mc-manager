@@ -16,7 +16,7 @@ const servers = {};
 function sid() {
   return 'srv_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
 }
-
+console.log('=== MC MANAGER GESTARTET ===');
 // ── Window ────────────────────────────────────────────────────────
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -98,6 +98,9 @@ function httpsDownload(url, destPath, onProgress) {
       https.get(u, { headers: { 'User-Agent': 'mc-manager/1.0' } }, res => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           return download(res.headers.location);
+        }
+        if (res.statusCode !== 200) {
+          return reject(new Error(`Download fehlgeschlagen: HTTP ${res.statusCode} für ${u}`));
         }
         const total = parseInt(res.headers['content-length'] || '0');
         let received = 0;
@@ -258,6 +261,13 @@ ipcMain.handle('rp-toggle', async (_, { rpPath, disabled }) => {
 ipcMain.handle('rp-delete', async (_, rpPath) => {
   try { fs.unlinkSync(rpPath); return { ok: true }; }
   catch(e) { return { ok: false, error: e.message }; }
+});
+
+ipcMain.handle('delete-server-folder', async (_, serverPath) => {
+  try {
+    fs.rmSync(serverPath, { recursive: true, force: true });
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
 });
 
 // ── UPnP Port Forwarding ──────────────────────────────────────────
@@ -466,13 +476,34 @@ ipcMain.handle('server-start', async (_, { id, serverPath, ram, jarName }) => {
   if (servers[id]?.process) return { ok: false, error: 'Server läuft bereits.' };
 
   const jar = jarName || 'server.jar';
-  const fullJar = path.join(serverPath, jar);
-  if (!fs.existsSync(fullJar)) return { ok: false, error: `JAR nicht gefunden: ${fullJar}` };
+  const isScript = jar === 'run.bat' || jar === 'run.sh';
+  const fullPath = path.join(serverPath, jar);
 
-  const proc = spawn('java', [`-Xmx${ram}M`, `-Xms${ram}M`, '-jar', jar, 'nogui'], { cwd: serverPath });
+  if (!fs.existsSync(fullPath)) return { ok: false, error: `Datei nicht gefunden: ${fullPath}` };
+
+  let proc;
+  if (isScript) {
+    // RAM in user_jvm_args.txt eintragen falls vorhanden (Forge/NeoForge Standard)
+    const argsFile = path.join(serverPath, 'user_jvm_args.txt');
+    if (fs.existsSync(argsFile)) {
+      let content = fs.readFileSync(argsFile, 'utf8');
+      content = content.replace(/-Xmx\S+/g, '').replace(/-Xms\S+/g, '');
+      content += `\n-Xmx${ram}M -Xms${ram}M\n`;
+      fs.writeFileSync(argsFile, content, 'utf8');
+    }
+
+    if (process.platform === 'win32') {
+      proc = spawn('cmd.exe', ['/c', jar, 'nogui'], { cwd: serverPath });
+    } else {
+      proc = spawn('bash', [jar, 'nogui'], { cwd: serverPath });
+    }
+  } else {
+    proc = spawn('java', [`-Xmx${ram}M`, `-Xms${ram}M`, '-jar', jar, 'nogui'], { cwd: serverPath });
+  }
 
   if (!servers[id]) servers[id] = {};
   servers[id].process = proc;
+  servers[id].isScript = isScript;
 
   proc.stdout.on('data', d => mainWindow.webContents.send('server-log', { id, msg: d.toString() }));
   proc.stderr.on('data', d => mainWindow.webContents.send('server-log', { id, msg: '[ERR] ' + d.toString() }));
@@ -488,7 +519,27 @@ ipcMain.handle('server-start', async (_, { id, serverPath, ram, jarName }) => {
 ipcMain.handle('server-stop', async (_, id) => {
   const s = servers[id];
   if (!s?.process) return { ok: false, error: 'Server nicht aktiv.' };
-  s.process.stdin.write('stop\n');
+
+  try {
+    if (s.isScript) {
+      // run.bat/run.sh: cmd.exe leitet stdin nicht an Java weiter → Prozesskette killen
+      if (process.platform === 'win32') {
+        spawn('taskkill', ['/pid', String(s.process.pid), '/f', '/t'], { shell: false });
+      } else {
+        s.process.kill('SIGTERM');
+      }
+    } else {
+      // Direktes Java: stop-Befehl über stdin senden
+      if (s.process.stdin?.writable) {
+        s.process.stdin.write('stop\n');
+      } else {
+        s.process.kill('SIGTERM');
+      }
+    }
+  } catch (e) {
+    try { s.process.kill(); } catch (_) {}
+  }
+
   return { ok: true };
 });
 
@@ -742,6 +793,22 @@ ipcMain.handle('get-local-ip', async () => {
   } catch (e) { return { ok: true, ip: 'localhost' }; }
 });
 
+ipcMain.handle('get-ipv6', async () => {
+  try {
+    const os = require('os');
+    const interfaces = os.networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+      for (const iface of interfaces[name]) {
+        // Öffentliche (nicht link-local, nicht internal) IPv6 suchen
+        if (iface.family === 'IPv6' && !iface.internal && !iface.address.startsWith('fe80')) {
+          return { ok: true, ip: iface.address };
+        }
+      }
+    }
+    return { ok: false, error: 'Keine öffentliche IPv6 gefunden.' };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
 // ── Diagnose ──────────────────────────────────────────────────────
 ipcMain.handle('diagnose', async (_, serverPath, jar) => {
   const checks = [];
@@ -943,6 +1010,52 @@ ipcMain.handle('player-op', async (_, { id, name }) => {
   } catch (e) { return { ok: false, error: e.message }; }
 });
 
+// ── Forge/NeoForge Installer ausführen ────────────────────────────
+function runForgeInstaller(installerPath, destPath) {
+  return new Promise((resolve) => {
+    const proc = spawn('java', ['-jar', path.basename(installerPath), '--installServer'], {
+      cwd: destPath
+    });
+
+    let output = '';
+    proc.stdout.on('data', d => output += d.toString());
+    proc.stderr.on('data', d => output += d.toString());
+
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        return resolve({ ok: false, error: `Installer fehlgeschlagen (Code ${code}): ${output.slice(-300)}` });
+      }
+
+      // Nach Installation: Start-Skript oder JAR finden
+      // Neuere Forge/NeoForge (1.17+) erzeugen run.bat / run.sh
+      const runBat = path.join(destPath, 'run.bat');
+      const runSh  = path.join(destPath, 'run.sh');
+
+      if (fs.existsSync(runBat) || fs.existsSync(runSh)) {
+        resolve({ ok: true, startJar: process.platform === 'win32' ? 'run.bat' : 'run.sh', isScript: true });
+        return;
+      }
+
+      // Ältere Versionen: direktes Server-JAR suchen (forge-X-universal.jar o.ä.)
+      const files = fs.readdirSync(destPath);
+      const serverJar = files.find(f =>
+        f.endsWith('.jar') &&
+        !f.includes('installer') &&
+        (f.includes('forge') || f.includes('neoforge')) &&
+        (f.includes('universal') || f.includes('server'))
+      );
+
+      if (serverJar) {
+        resolve({ ok: true, startJar: serverJar, isScript: false });
+      } else {
+        resolve({ ok: false, error: 'Server-JAR nach Installation nicht gefunden. Installer-Output: ' + output.slice(-300) });
+      }
+    });
+
+    proc.on('error', (e) => resolve({ ok: false, error: e.message }));
+  });
+}
+
 // ── Download: Versionen abrufen ───────────────────────────────────
 ipcMain.handle('dl-versions', async (_, loader) => {
   try {
@@ -977,18 +1090,26 @@ ipcMain.handle('dl-versions', async (_, loader) => {
     }
 
     if (loader === 'neoforge') {
-      const r = await httpsGet('https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/neoforge');
+      const r = await httpsGet('https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml');
+      const matches = [...r.body.matchAll(/<version>(\d+)\.(\d+)\.\d+<\/version>/g)];
+      const mcVersions = [...new Set(matches.map(m => `1.${m[1]}.${m[2]}`))].reverse();
+      return { ok: true, versions: mcVersions.map(v => ({ id: v })) };
+    }
+
+    if (loader === 'purpur') {
+      const r = await httpsGet('https://api.purpurmc.org/v2/purpur');
       const data = JSON.parse(r.body);
-      const versions = [...data.versions].reverse().slice(0, 40).map(v => ({ id: v }));
+      const versions = [...data.versions].reverse().map(v => ({ id: v }));
       return { ok: true, versions };
     }
 
-    return { ok: false, error: 'Unbekannter Loader.' };
+    return { ok: false, error: `Unbekannter Loader: ${loader}` };
   } catch (e) { return { ok: false, error: e.message }; }
 });
 
 // ── Download: Builds für eine Version (Paper) ─────────────────────
 ipcMain.handle('dl-builds', async (_, { loader, version }) => {
+  console.log('=== dl-builds aufgerufen mit loader:', JSON.stringify(loader), 'version:', JSON.stringify(version));
   try {
     if (loader === 'paper') {
       const r = await httpsGet(`https://api.papermc.io/v2/projects/paper/versions/${version}`);
@@ -1008,12 +1129,28 @@ ipcMain.handle('dl-builds', async (_, { loader, version }) => {
       const builds = (data[version] || []).reverse().map(b => ({ id: b }));
       return { ok: true, builds };
     }
+    if (loader === 'neoforge') {
+      const r = await httpsGet('https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml');
+      const matches = [...r.body.matchAll(/<version>([^<]+)<\/version>/g)];
+      const allVersions = matches.map(m => m[1]);
+      const parts = (version || '').match(/^1\.(\d+)\.(\d+)$/);
+      const prefix = parts ? `${parts[1]}.${parts[2]}.` : '';
+      const filtered = prefix ? allVersions.filter(v => v.startsWith(prefix)).reverse() : allVersions.slice().reverse();
+      return { ok: true, builds: filtered.map(b => ({ id: b })) };
+    }
+    if (loader === 'purpur') {
+      const r = await httpsGet(`https://api.purpurmc.org/v2/purpur/${version}`);
+      const data = JSON.parse(r.body);
+      const builds = [...data.builds.all].reverse().map(b => ({ id: b }));
+      return { ok: true, builds };
+    }
     return { ok: true, builds: [] };
   } catch (e) { return { ok: false, error: e.message }; }
 });
 
 // ── Download: JAR herunterladen ───────────────────────────────────
 ipcMain.handle('dl-download', async (_, { loader, version, build, destPath }) => {
+  console.log('=== dl-download aufgerufen mit loader:', JSON.stringify(loader), 'version:', JSON.stringify(version), 'build:', JSON.stringify(build), 'destPath:', JSON.stringify(destPath));
   try {
     fs.mkdirSync(destPath, { recursive: true });
     let url = '';
@@ -1048,7 +1185,7 @@ ipcMain.handle('dl-download', async (_, { loader, version, build, destPath }) =>
     }
 
     if (loader === 'forge') {
-      url = `https://files.minecraftforge.net/net/minecraftforge/forge/${build}/forge-${build}-installer.jar`;
+      url = `https://maven.minecraftforge.net/net/minecraftforge/forge/${build}/forge-${build}-installer.jar`;
       filename = `forge-${build}-installer.jar`;
     }
 
@@ -1062,6 +1199,66 @@ ipcMain.handle('dl-download', async (_, { loader, version, build, destPath }) =>
       mainWindow.webContents.send('dl-progress', pct);
     });
 
+    if (loader === 'forge' || loader === 'neoforge') {
+      mainWindow.webContents.send('dl-progress', 100);
+      const installResult = await runForgeInstaller(fullDest, destPath);
+      if (!installResult.ok) return { ok: false, error: installResult.error };
+      return { ok: true, filename: installResult.startJar, fullDest, isScript: installResult.isScript };
+    }
+
+    if (loader === 'purpur') {
+      const b = build || 'latest';
+      url = `https://api.purpurmc.org/v2/purpur/${version}/${b}/download`;
+      filename = `purpur-${version}-${b}.jar`;
+    }
+
     return { ok: true, filename, fullDest };
   } catch (e) { return { ok: false, error: e.message }; }
 });
+
+// ── DDNS (generisch über Templates) ────────────────────────────────
+const { getProvider, getProviderList } = require('./ddns-providers');
+
+ipcMain.handle('ddns-get-providers', async () => {
+  return { ok: true, providers: getProviderList() };
+});
+
+ipcMain.handle('ddns-update', async (_, { providerKey, fields }) => {
+  try {
+    const provider = getProvider(providerKey);
+    if (!provider) return { ok: false, error: 'Unbekannter Provider.' };
+
+    const built = provider.buildUrl(fields);
+    let url, headers = {};
+    if (typeof built === 'string') {
+      url = built;
+    } else {
+      url = built.url;
+      headers = built.headers || {};
+    }
+
+    const r = await httpsGetWithHeaders(url, headers);
+    const result = provider.parseResponse(r.body, r.status);
+
+    if (result.ok) {
+      const fullDomain = provider.fullDomain(fields);
+      return { ok: true, fullDomain };
+    } else {
+      return { ok: false, error: result.error };
+    }
+  } catch(e) { return { ok: false, error: e.message }; }
+});
+
+// Helper: httpsGet mit zusätzlichen Headers (für No-IP Basic-Auth etc.)
+function httpsGetWithHeaders(url, extraHeaders) {
+  return new Promise((resolve, reject) => {
+    https.get(url, { headers: { 'User-Agent': 'mc-manager/1.0', ...extraHeaders } }, res => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        return httpsGetWithHeaders(res.headers.location, extraHeaders).then(resolve).catch(reject);
+      }
+      let data = '';
+      res.on('data', d => data += d);
+      res.on('end', () => resolve({ status: res.statusCode, body: data }));
+    }).on('error', reject);
+  });
+}

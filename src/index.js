@@ -4,12 +4,14 @@ let activeId = null;
 let runningIds = new Set();
 let startingIds = new Set(); // Server die gerade hochfahren
 let onlineIds = new Set();   // Server die vollständig online sind
+let stoppingIds = new Set(); // Server die gerade gestoppt werden
 let allMods = [];
 let logBuffers = {};
 let toastTimer;
 let editingId = null;
 let pendingStartId = null;
 let currentFilePath = null;
+const _revealedTexts = {};
 
 // ── Init ──────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', async () => {
@@ -49,7 +51,11 @@ window.mc.onLog(({ id, msg }) => {
       startStatsPolling();
       // UPnP falls öffentlich
       const srv = serverList.find(s => s.id === id);
-      if (srv?.visibility === 'public') startUpnp(id);
+      if (srv?.visibility === 'public') {
+        startUpnp(id);
+        updateIpv6Display(id);
+        if (srv.ddnsProvider) updateDdns(id);
+      }
     }
     renderServerList();
   }
@@ -58,6 +64,7 @@ window.mc.onLog(({ id, msg }) => {
 window.mc.onStopped(({ id, code }) => {
   runningIds.delete(id);
   startingIds.delete(id);
+  stoppingIds.delete(id);
   onlineIds.delete(id);
   if (!logBuffers[id]) logBuffers[id] = [];
   logBuffers[id].push({ cls: 'err', text: `\n— Server beendet (Exit ${code}) —` });
@@ -66,16 +73,19 @@ window.mc.onStopped(({ id, code }) => {
     updateDetailHeader();
     stopStatsPolling();
   }
-  // UPnP aufräumen
   window.mc.upnpUnmap({ id }).catch(() => {});
   renderServerList();
 });
 
 window.mc.onDlProgress((pct) => {
-  const bar = document.getElementById('modalDlBar');
-  const pctEl = document.getElementById('modalDlPct');
+  const bar = document.getElementById('dlNotifBar');
+  const pctEl = document.getElementById('dlNotifPct');
   if (bar) bar.style.width = pct + '%';
   if (pctEl) pctEl.textContent = pct + '%';
+  if (pct === 100 && (_dlNotifLoader === 'forge' || _dlNotifLoader === 'neoforge')) {
+    const s = document.getElementById('dlNotifStatus');
+    if (s) s.textContent = 'Installer wird ausgeführt...';
+  }
 });
 
 // ── Navigation ────────────────────────────────────────────────────
@@ -124,6 +134,7 @@ function openServerDetail(id) {
   updateDetailHeader();
   runDiagnosis();
   loadServerIcon();
+  loadNetworkSettings(); 
 }
 
 function backToList() {
@@ -152,12 +163,14 @@ function updateDetailHeader() {
 
   // Status-Text
   const statusEl = document.getElementById('detailStatus');
-  if (online)        { statusEl.textContent = '🟢 Online';     statusEl.style.color = 'var(--running)'; }
-  else if (starting) { statusEl.textContent = '🟡 Startet...'; statusEl.style.color = '#f8c87c'; }
-  else               { statusEl.textContent = '🔴 Gestoppt';   statusEl.style.color = 'var(--stopped)'; }
+  if (online)            { statusEl.textContent = '🟢 Online';      statusEl.style.color = 'var(--running)'; }
+  else if (starting)     { statusEl.textContent = '🟡 Startet...';  statusEl.style.color = '#f8c87c'; }
+  else if (stoppingIds.has(activeId)) { statusEl.textContent = '🟠 Stoppt...'; statusEl.style.color = '#f87c7c'; }
+  else                    { statusEl.textContent = '🔴 Gestoppt';    statusEl.style.color = 'var(--stopped)'; }
 
   document.getElementById('detailBtnStart').style.display = running ? 'none' : '';
   document.getElementById('detailBtnStop').style.display  = running ? '' : 'none';
+  document.getElementById('detailBtnStop').disabled = stoppingIds.has(activeId);
 
   document.getElementById('detailInfo').innerHTML = `
     <span>Loader: <b style="color:var(--text)">${srv.loader}</b></span>
@@ -170,8 +183,8 @@ function updateDetailHeader() {
   if (online) updateServerAddress();
   else {
     document.getElementById('addressBox').style.display = 'none';
-    const upnpBox = document.getElementById('upnpBox');
-    if (upnpBox) upnpBox.style.display = 'none';
+    const duckdnsBox = document.getElementById('duckdnsBox');
+    if (duckdnsBox) duckdnsBox.style.display = 'none';
   }
 
   // UPnP Box zeigen falls öffentlich und online
@@ -194,13 +207,34 @@ async function updateServerAddress() {
 
   const box = document.getElementById('addressBox');
   box.style.display = 'flex';
-  document.getElementById('addressText').textContent = address;
+  setMaskedText('addressText', address);
 }
 
 function copyAddress() {
-  const addr = document.getElementById('addressText').textContent;
+  const addr = _revealedTexts['addressText'] || document.getElementById('addressText').textContent;
   navigator.clipboard.writeText(addr);
   toast('Adresse kopiert!');
+}
+
+function setMaskedText(elId, value) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  _revealedTexts[elId] = value;
+  el.dataset.revealed = 'false';
+  el.textContent = '•'.repeat(Math.min(value.length, 20));
+}
+
+function toggleReveal(elId) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  const isRevealed = el.dataset.revealed === 'true';
+  if (isRevealed) {
+    el.dataset.revealed = 'false';
+    el.textContent = '•'.repeat(Math.min((_revealedTexts[elId] || '').length, 20));
+  } else {
+    el.dataset.revealed = 'true';
+    el.textContent = _revealedTexts[elId] || el.textContent;
+  }
 }
 
 // ── Toast ─────────────────────────────────────────────────────────
@@ -216,6 +250,53 @@ function toast(msg, type = 'ok') {
     el.classList.remove('show');
     el.addEventListener('transitionend', () => el.remove(), { once: true });
   }, 3000);
+}
+
+// ── Download-Benachrichtigung ─────────────────────────────────────
+let _dlNotifEl = null;
+let _dlNotifLoader = null;
+
+function showDlNotification(name, loader, version) {
+  _dlNotifLoader = loader;
+  if (_dlNotifEl) { _dlNotifEl.remove(); _dlNotifEl = null; }
+
+  const el = document.createElement('div');
+  el.className = 'toast-item dl-notif show';
+  el.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <span style="font-weight:700;font-size:12px;color:var(--accent)">⬇ Download</span>
+      <span style="font-size:11px;color:var(--muted)">${loader} ${version}</span>
+    </div>
+    <div style="font-size:12px;font-weight:600;margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${name}</div>
+    <div id="dlNotifStatus" style="font-size:11px;color:var(--muted);margin-bottom:6px">Wird heruntergeladen...</div>
+    <div style="background:var(--bg2);border-radius:4px;height:5px;overflow:hidden">
+      <div id="dlNotifBar" style="height:100%;width:0%;background:var(--accent);transition:width 0.3s;border-radius:4px"></div>
+    </div>
+    <div style="text-align:right;font-size:11px;color:var(--muted);margin-top:4px" id="dlNotifPct">0%</div>`;
+
+  document.getElementById('toast-container').appendChild(el);
+  _dlNotifEl = el;
+
+  return {
+    setStatus(msg) {
+      const s = el.querySelector('#dlNotifStatus');
+      if (s) s.textContent = msg;
+    },
+    finish(msg, type) {
+      const s = el.querySelector('#dlNotifStatus');
+      const bar = el.querySelector('#dlNotifBar');
+      const pct = el.querySelector('#dlNotifPct');
+      const col = type === 'ok' ? 'var(--accent2)' : 'var(--accent3)';
+      if (s)   { s.textContent = msg; s.style.color = col; }
+      if (bar) { bar.style.width = '100%'; bar.style.background = col; }
+      if (pct) pct.textContent = '100%';
+      el.style.borderColor = col;
+      setTimeout(() => {
+        el.classList.remove('show');
+        el.addEventListener('transitionend', () => { el.remove(); if (_dlNotifEl === el) _dlNotifEl = null; }, { once: true });
+      }, 4000);
+    }
+  };
 }
 
 // ── Server-Liste rendern ──────────────────────────────────────────
@@ -239,7 +320,7 @@ function renderServerList() {
       </div>
       <div class="server-card-actions">
         ${running
-          ? `<button class="btn btn-danger" style="padding:6px 14px;font-size:12px" onclick="event.stopPropagation();stopServer('${srv.id}')">■ Stopp</button>`
+          ? `<button class="btn btn-danger" style="padding:6px 14px;font-size:12px" ${stoppingIds.has(srv.id) ? 'disabled' : ''} onclick="event.stopPropagation();stopServer('${srv.id}')">${stoppingIds.has(srv.id) ? '⏳ Stoppt...' : '■ Stopp'}</button>`
           : `<button class="btn btn-primary" style="padding:6px 14px;font-size:12px" onclick="event.stopPropagation();startServer('${srv.id}')">▶ Start</button>`
         }
         <button class="btn btn-ghost" style="padding:6px 14px;font-size:12px" onclick="event.stopPropagation();openEditServer('${srv.id}')">✎</button>
@@ -293,7 +374,13 @@ async function stopServer(id) {
 
 async function doStopServer(id) {
   const res = await window.mc.serverStop(id);
-  if (!res.ok) toast(res.error, 'err');
+  if (res.ok) {
+    stoppingIds.add(id);
+    if (activeId === id) updateDetailHeader();
+    renderServerList();
+  } else {
+    toast(res.error, 'err');
+  }
 }
 
 function closeEulaModal() {
@@ -317,8 +404,6 @@ async function openAddServer() {
   document.getElementById('srvName').value = '';
   document.getElementById('srvRam').value = '2048';
   document.getElementById('modalSaveBtn').textContent = 'Erstellen & Herunterladen';
-  document.getElementById('modalDlWrap').style.display = 'none';
-  // Letzten Pfad vorausfüllen
   const last = await window.mc.prefsGet('lastFolderPath');
   document.getElementById('srvPath').value = last?.value || '';
   document.getElementById('modal').style.display = 'flex';
@@ -335,10 +420,8 @@ function openEditServer(id) {
   document.getElementById('srvVersion').value = srv.version || '1.21.4';
   document.getElementById('srvLoader').value = srv.loader || 'vanilla';
   document.getElementById('modalSaveBtn').textContent = 'Speichern';
-  // Visibility vorausfüllen
   const vis = srv.visibility || 'lan';
   document.querySelectorAll('input[name="srvVisibility"]').forEach(r => r.checked = r.value === vis);
-  document.getElementById('modalDlWrap').style.display = 'none';
   document.getElementById('modal').style.display = 'flex';
 }
 
@@ -400,61 +483,54 @@ async function saveServer() {
   await window.mc.serversSave(serverList);
   renderServerList();
 
-  // Download starten
-  document.getElementById('modalSaveBtn').disabled = true;
-  document.getElementById('modalCancelBtn').disabled = true;
-  document.getElementById('modalDlWrap').style.display = 'flex';
-  document.getElementById('modalDlStatus').textContent = 'JAR wird heruntergeladen...';
-  document.getElementById('modalDlBar').style.width = '0%';
-  document.getElementById('modalDlPct').textContent = '0%';
+  // Modal sofort schließen, Download-Popup anzeigen
+  closeModal();
+  const dlNotif = showDlNotification(name, loader, version);
 
-  // Build für Paper/Fabric ermitteln
+  // Build ermitteln
   let build = null;
-  if (loader === 'paper') {
-    const buildsRes = await window.mc.dlBuilds({ loader, version });
-    if (buildsRes.ok && buildsRes.builds.length > 0) build = buildsRes.builds[0].id;
-  } else if (loader === 'fabric') {
-    const buildsRes = await window.mc.dlBuilds({ loader, version });
-    if (buildsRes.ok && buildsRes.builds.length > 0) build = buildsRes.builds[0].id;
-  } else if (loader === 'forge' || loader === 'neoforge') {
-    const versionsRes = await window.mc.dlVersions(loader);
-    if (versionsRes.ok && versionsRes.versions.length > 0) build = versionsRes.versions[0].id;
-  }
+  const buildsRes = await window.mc.dlBuilds({ loader, version });
+  if (buildsRes.ok && buildsRes.builds.length > 0) build = buildsRes.builds[0].id;
 
   const dlRes = await window.mc.dlDownload({ loader, version, build, destPath: folderRes.path });
 
-  document.getElementById('modalSaveBtn').disabled = false;
-  document.getElementById('modalCancelBtn').disabled = false;
-
   if (dlRes.ok) {
-    // JAR-Namen in Server-Config aktualisieren
     const idx = serverList.findIndex(s => s.id === id);
     if (idx !== -1) {
       serverList[idx].jar = dlRes.filename;
       await window.mc.serversSave(serverList);
     }
-    document.getElementById('modalDlStatus').textContent = '✓ ' + dlRes.filename + ' heruntergeladen!';
-    document.getElementById('modalDlBar').style.width = '100%';
-    setTimeout(() => {
-      closeModal();
-      openServerDetail(id);
-    }, 1200);
+    dlNotif.finish(`✓ ${name} bereit!`, 'ok');
+    setTimeout(() => openServerDetail(id), 800);
   } else {
-    document.getElementById('modalDlStatus').textContent = 'Fehler: ' + dlRes.error;
-    document.getElementById('modalDlStatus').style.color = 'var(--accent3)';
-    toast(dlRes.error, 'err');
+    dlNotif.finish('Fehler: ' + dlRes.error, 'err');
   }
 }
 
 async function deleteServer(id) {
-  if (!(await showConfirm('Server wirklich entfernen? Dateien bleiben erhalten.', 'Server entfernen'))) return;
+  const srv = serverList.find(s => s.id === id);
+  if (!srv) return;
+
+  if (!(await showConfirm('Server wirklich entfernen?', 'Server entfernen'))) return;
+
+  const alsoDeleteFiles = await showConfirm(
+    'Sollen auch alle Server-Dateien (Welt, Configs, Mods) von der Festplatte gelöscht werden? Das kann NICHT rückgängig gemacht werden!',
+    'Dateien löschen?',
+    'Ja, Dateien löschen',
+    true
+  );
+
+  if (alsoDeleteFiles) {
+    const delRes = await window.mc.deleteServerFolder(srv.path);
+    if (!delRes.ok) toast('Fehler beim Löschen der Dateien: ' + delRes.error, 'err');
+  }
+
   serverList = serverList.filter(s => s.id !== id);
   if (activeId === id) { activeId = null; backToList(); }
   await window.mc.serversSave(serverList);
   renderServerList();
-  toast('Server entfernt.');
+  toast(alsoDeleteFiles ? 'Server und Dateien entfernt.' : 'Server entfernt, Dateien bleiben erhalten.');
 }
-
 // ── Diagnose ──────────────────────────────────────────────────────
 async function runDiagnosis() {
   const srv = serverList.find(s => s.id === activeId);
@@ -520,8 +596,8 @@ async function downloadMissingJar() {
     const b = await window.mc.dlBuilds({ loader: srv.loader, version: srv.version });
     if (b.ok && b.builds.length > 0) build = b.builds[0].id;
   } else if (srv.loader === 'forge' || srv.loader === 'neoforge') {
-    const v = await window.mc.dlVersions(srv.loader);
-    if (v.ok && v.versions.length > 0) build = v.versions[0].id;
+    const b = await window.mc.dlBuilds({ loader: srv.loader, version: srv.version });
+    if (b.ok && b.builds.length > 0) build = b.builds[0].id;
   }
 
   const res = await window.mc.dlDownload({
@@ -1109,17 +1185,88 @@ async function opPlayer(name) {
   else toast(res.error, 'err');
 }
 
+function toggleNetPortRow() {
+  const isPublic = document.getElementById('netPublic').checked;
+  document.getElementById('netPortRow').style.display = isPublic ? 'block' : 'none';
+  document.getElementById('netDdnsRow').style.display = isPublic ? 'flex' : 'none';
+}
+
+document.addEventListener('change', (e) => {
+  if (e.target.name === 'netVisibility') toggleNetPortRow();
+});
+
+async function loadNetworkSettings() {
+  const srv = serverList.find(s => s.id === activeId);
+  if (!srv) return;
+  const vis = srv.visibility || 'lan';
+  document.getElementById('netLan').checked = vis === 'lan';
+  document.getElementById('netPublic').checked = vis === 'public';
+
+  const propsRes = await window.mc.propsRead(srv.path);
+  const currentPort = propsRes.ok ? (propsRes.props['server-port'] || '25565') : '25565';
+  document.getElementById('netPort').value = srv.publicPort || currentPort;
+
+  await loadDdnsProviderDropdown();
+  document.getElementById('netDdnsProvider').value = srv.ddnsProvider || '';
+  renderDdnsFields();
+
+  toggleNetPortRow();
+}
+
+async function saveNetworkSettings() {
+  const srv = serverList.find(s => s.id === activeId);
+  if (!srv) return toast('Kein Server aktiv.', 'err');
+
+  const visibility = document.querySelector('input[name="netVisibility"]:checked')?.value || 'lan';
+  const port = parseInt(document.getElementById('netPort').value) || 25565;
+  const ddns = collectDdnsFields();
+
+  const idx = serverList.findIndex(s => s.id === activeId);
+  if (idx !== -1) {
+    serverList[idx].visibility = visibility;
+    if (visibility === 'public') {
+      serverList[idx].publicPort = port;
+      serverList[idx].ddnsProvider = ddns?.providerKey || null;
+      serverList[idx].ddnsFields = ddns?.fields || null;
+    }
+    await window.mc.serversSave(serverList);
+  }
+
+  if (visibility === 'public') {
+    const propsRes = await window.mc.propsRead(srv.path);
+    if (propsRes.ok) {
+      const props = propsRes.props;
+      props['server-port'] = String(port);
+      await window.mc.propsWrite({ serverPath: srv.path, props });
+    }
+  }
+
+  toast('Netzwerk-Einstellungen gespeichert!');
+
+  if (onlineIds.has(activeId)) {
+    if (visibility === 'public') {
+      await startUpnp(activeId);
+      await updateIpv6Display(activeId);
+      if (ddns?.providerKey) await updateDdns(activeId);
+    } else {
+      await window.mc.upnpUnmap({ id: activeId });
+      const dBox = document.getElementById('duckdnsBox');
+      const iBox = document.getElementById('ipv6Box');
+      if (dBox) dBox.style.display = 'none';
+      if (iBox) iBox.style.display = 'none';
+    }
+  }
+}
+
 // ── UPnP Port Forwarding ──────────────────────────────────────────
 async function startUpnp(id) {
   const srv = serverList.find(s => s.id === id);
   if (!srv || srv.visibility !== 'public') return;
 
   const box = document.getElementById('upnpBox');
-  const txt = document.getElementById('upnpText');
   const status = document.getElementById('upnpStatus');
-  if (box) { box.style.display = 'flex'; txt.textContent = '⏳ Verbinde...'; status.textContent = ''; }
+  if (box) { box.style.display = 'flex'; setMaskedText('upnpText', '⏳ Verbinde...'); status.textContent = ''; }
 
-  // Port aus server.properties lesen
   const propsRes = await window.mc.propsRead(srv.path);
   const port = parseInt(propsRes.ok ? (propsRes.props['server-port'] || '25565') : '25565');
 
@@ -1127,11 +1274,11 @@ async function startUpnp(id) {
 
   if (res.ok) {
     const addr = `${res.externalIp}:${port}`;
-    if (txt) txt.textContent = addr;
+    setMaskedText('upnpText', addr);
     if (status) { status.textContent = '✓ UPnP aktiv'; status.style.color = 'var(--accent2)'; }
-    toast('Port Forwarding aktiv! Externe Adresse: ' + addr);
+    toast('Port Forwarding aktiv!');
   } else {
-    if (txt) txt.textContent = 'Fehlgeschlagen';
+    setMaskedText('upnpText', 'Fehlgeschlagen');
     if (status) { status.textContent = '✗ ' + res.error; status.style.color = 'var(--accent3)'; }
     toast('UPnP: ' + res.error, 'err');
   }
@@ -1142,8 +1289,8 @@ async function retryUpnp() {
 }
 
 function copyUpnpAddress() {
-  const addr = document.getElementById('upnpText').textContent;
-  if (addr && addr !== '—' && addr !== '⏳ Verbinde...') {
+  const addr = _revealedTexts['upnpText'] || document.getElementById('upnpText').textContent;
+  if (addr && addr !== '—' && !addr.includes('Verbinde')) {
     navigator.clipboard.writeText(addr);
     toast('Externe Adresse kopiert!');
   }
@@ -2074,4 +2221,144 @@ async function createBackup() {
   const res = await window.mc.backupCreate({ serverPath: srv.path, backupPath });
   if (res.ok) { log.textContent = '✓ Backup erstellt:\n' + res.dest; toast('Backup erfolgreich!'); }
   else { log.textContent = 'Fehler: ' + res.error; toast(res.error, 'err'); }
+}
+
+// ── DDNS (generisch über Provider-Templates) ──────────────────────
+let ddnsProvidersCache = null;
+
+async function loadDdnsProviderDropdown() {
+  if (!ddnsProvidersCache) {
+    const res = await window.mc.ddnsGetProviders();
+    ddnsProvidersCache = res.ok ? res.providers : [];
+  }
+  const sel = document.getElementById('netDdnsProvider');
+  sel.innerHTML = '<option value="">— Kein DNS —</option>';
+  ddnsProvidersCache.forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p.key;
+    opt.textContent = p.label;
+    sel.appendChild(opt);
+  });
+}
+
+// Feld-Definitionen lokal duplizieren (für UI-Rendering ohne extra IPC-Call)
+const DDNS_FIELD_DEFS = {
+  duckdns: [
+    { key: 'domain', label: 'Subdomain', placeholder: 'meinserver', type: 'text' },
+    { key: 'token', label: 'Token', placeholder: 'DuckDNS Token', type: 'password' }
+  ],
+  noip: [
+    { key: 'domain', label: 'Hostname', placeholder: 'meinserver.ddns.net', type: 'text' },
+    { key: 'user', label: 'Benutzername', placeholder: 'user@email.com', type: 'text' },
+    { key: 'pass', label: 'Passwort', placeholder: 'Passwort', type: 'password' }
+  ],
+  custom: [
+    { key: 'displayDomain', label: 'Anzeige-Adresse', placeholder: 'meinserver.beispiel.com', type: 'text' },
+    { key: 'customUrl', label: 'Update-URL', placeholder: 'https://anbieter.de/update?host={domain}&key={token}&ip={ip}', type: 'text' },
+    { key: 'token', label: 'Token / API-Key (optional)', placeholder: 'Token falls benötigt', type: 'password' }
+  ]
+};
+
+function renderDdnsFields() {
+  const providerKey = document.getElementById('netDdnsProvider').value;
+  const container = document.getElementById('netDdnsFields');
+  container.innerHTML = '';
+
+  if (!providerKey) return;
+
+  const fields = DDNS_FIELD_DEFS[providerKey] || [];
+  fields.forEach(f => {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'display:flex;flex-direction:column;gap:4px';
+
+    if (f.type === 'password') {
+      wrap.innerHTML = `
+        <label style="font-size:11px">${f.label}</label>
+        <div style="position:relative">
+          <input type="password" id="ddnsField_${f.key}" placeholder="${f.placeholder}" style="font-size:12px;width:100%;padding-right:32px">
+          <button type="button" onclick="togglePasswordField('ddnsField_${f.key}')" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px;padding:2px">👁</button>
+        </div>`;
+    } else {
+      wrap.innerHTML = `
+        <label style="font-size:11px">${f.label}</label>
+        <input type="${f.type}" id="ddnsField_${f.key}" placeholder="${f.placeholder}" style="font-size:12px">`;
+    }
+    container.appendChild(wrap);
+  });
+
+  const srv = serverList.find(s => s.id === activeId);
+  if (srv?.ddnsProvider === providerKey && srv.ddnsFields) {
+    fields.forEach(f => {
+      const el = document.getElementById('ddnsField_' + f.key);
+      if (el && srv.ddnsFields[f.key]) el.value = srv.ddnsFields[f.key];
+    });
+  }
+}
+
+function togglePasswordField(elId) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  el.type = el.type === 'password' ? 'text' : 'password';
+}
+
+function collectDdnsFields() {
+  const providerKey = document.getElementById('netDdnsProvider').value;
+  if (!providerKey) return null;
+  const fields = DDNS_FIELD_DEFS[providerKey] || [];
+  const values = {};
+  fields.forEach(f => {
+    const el = document.getElementById('ddnsField_' + f.key);
+    if (el) values[f.key] = el.value.trim();
+  });
+  return { providerKey, fields: values };
+}
+
+async function updateDdns(id) {
+  const srv = serverList.find(s => s.id === id);
+  if (!srv || !srv.ddnsProvider) return;
+
+  const box = document.getElementById('duckdnsBox');
+  const status = document.getElementById('duckdnsStatus');
+  const port = srv.publicPort || 25565;
+
+  if (box) { box.style.display = 'flex'; setMaskedText('duckdnsText', '⏳ Aktualisiere...'); status.textContent = ''; }
+
+  const res = await window.mc.ddnsUpdate({ providerKey: srv.ddnsProvider, fields: srv.ddnsFields });
+
+  if (res.ok) {
+    const addr = `${res.fullDomain}:${port}`;
+    setMaskedText('duckdnsText', addr);
+    if (status) { status.textContent = '✓ Aktualisiert'; status.style.color = 'var(--accent2)'; }
+  } else {
+    setMaskedText('duckdnsText', 'Fehlgeschlagen');
+    if (status) { status.textContent = '✗ ' + res.error; status.style.color = 'var(--accent3)'; }
+  }
+}
+
+function copyDuckdnsAddress() {
+  const addr = _revealedTexts['duckdnsText'] || document.getElementById('duckdnsText').textContent;
+  if (addr && addr !== '—') { navigator.clipboard.writeText(addr); toast('Join-Adresse kopiert!'); }
+}
+
+// ── IPv6 ───────────────────────────────────────────────────────────
+async function updateIpv6Display(id) {
+  const srv = serverList.find(s => s.id === id);
+  if (!srv) return;
+  const box = document.getElementById('ipv6Box');
+  if (!box) return;
+
+  const res = await window.mc.getIpv6();
+  const port = srv.publicPort || 25565;
+
+  if (res.ok) {
+    box.style.display = 'flex';
+    setMaskedText('ipv6Text', `[${res.ip}]:${port}`);
+  } else {
+    box.style.display = 'none';
+  }
+}
+
+function copyIpv6Address() {
+  const addr = _revealedTexts['ipv6Text'] || document.getElementById('ipv6Text').textContent;
+  if (addr && addr !== '—') { navigator.clipboard.writeText(addr); toast('IPv6-Adresse kopiert!'); }
 }

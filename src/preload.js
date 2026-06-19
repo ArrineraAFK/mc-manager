@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('mc', {
   serverStart:    (opts)    => ipcRenderer.invoke('server-start', opts),
   serverStop:     (id)      => ipcRenderer.invoke('server-stop', id),
   serverCommand:  (opts)    => ipcRenderer.invoke('server-command', opts),
+  deleteServerFolder: (p) => ipcRenderer.invoke('delete-server-folder', p),
 
   // RCON
   rconConnect:    (opts)    => ipcRenderer.invoke('rcon-connect', opts),
@@ -33,7 +34,7 @@ contextBridge.exposeInMainWorld('mc', {
 
   getStats:       (id)      => ipcRenderer.invoke('get-stats', id),
   getLocalIp:     ()        => ipcRenderer.invoke('get-local-ip'),
-
+  getIpv6:        ()        => ipcRenderer.invoke('get-ipv6'),
   // Diagnose & Reparatur
   diagnose:       (p, j)    => ipcRenderer.invoke('diagnose', p, j),
   repair:         (opts)    => ipcRenderer.invoke('repair', opts),
@@ -102,4 +103,8 @@ contextBridge.exposeInMainWorld('mc', {
   onLog:          (cb)      => ipcRenderer.on('server-log',     (_, d) => cb(d)),
   onStopped:      (cb)      => ipcRenderer.on('server-stopped', (_, d) => cb(d)),
   onDlProgress:   (cb)      => ipcRenderer.on('dl-progress',    (_, p) => cb(p)),
+
+  // DDNS (generisch)
+  ddnsGetProviders: () => ipcRenderer.invoke('ddns-get-providers'),
+  ddnsUpdate: (opts) => ipcRenderer.invoke('ddns-update', opts),
 });
