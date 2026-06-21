@@ -35,6 +35,7 @@ contextBridge.exposeInMainWorld('mc', {
   getStats:       (id)      => ipcRenderer.invoke('get-stats', id),
   getLocalIp:     ()        => ipcRenderer.invoke('get-local-ip'),
   getIpv6:        ()        => ipcRenderer.invoke('get-ipv6'),
+
   // Diagnose & Reparatur
   diagnose:       (p, j)    => ipcRenderer.invoke('diagnose', p, j),
   repair:         (opts)    => ipcRenderer.invoke('repair', opts),
@@ -56,6 +57,8 @@ contextBridge.exposeInMainWorld('mc', {
   // Prefs (Pfad-Persistenz)
   prefsGet:       (k)       => ipcRenderer.invoke('prefs-get', k),
   prefsSet:       (k, v)    => ipcRenderer.invoke('prefs-set', k, v),
+  getAppMode:     ()        => ipcRenderer.invoke('get-app-mode'),
+  resetAppMode:   ()        => ipcRenderer.invoke('reset-app-mode'),
 
   // Stats-Persistenz
   statsLoad:          (id)   => ipcRenderer.invoke('stats-load', id),
@@ -93,6 +96,9 @@ contextBridge.exposeInMainWorld('mc', {
   playerKick:     (opts)    => ipcRenderer.invoke('player-kick', opts),
   playerBan:      (opts)    => ipcRenderer.invoke('player-ban', opts),
   playerOp:       (opts)    => ipcRenderer.invoke('player-op', opts),
+
+  // Mod Config
+  modConfigFiles: (opts)    => ipcRenderer.invoke('mod-config-files', opts),
 
   // Download
   dlVersions:     (loader)  => ipcRenderer.invoke('dl-versions', loader),

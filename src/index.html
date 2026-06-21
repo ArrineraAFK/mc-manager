@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' 'unsafe-inline' 'unsafe-hashes'; img-src 'self' https://cdn.modrinth.com https://avatars.githubusercontent.com https://hangar.papermc.io data: blob:; connect-src https://launchermeta.mojang.com https://api.papermc.io https://meta.fabricmc.net https://files.minecraftforge.net https://maven.neoforged.net https://api.modrinth.com https://cdn.modrinth.com https://hangar.papermc.io">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' 'unsafe-inline' 'unsafe-hashes'; img-src 'self' https://cdn.modrinth.com https://avatars.githubusercontent.com https://hangar.papermc.io data: blob:; connect-src https://launchermeta.mojang.com https://api.papermc.io https://meta.fabricmc.net https://files.minecraftforge.net https://maven.neoforged.net https://api.modrinth.com https://cdn.modrinth.com https://hangar.papermc.io http://*:* ws://*:*">
   <title>MC Manager</title>
   <link rel="stylesheet" href="./index.css">
   <script src="./index.js" defer></script>
@@ -13,6 +13,9 @@
   <div class="status-dot" id="statusDot"></div>
   <span>MC MANAGER</span>
   <div class="titlebar-server" id="titlebarServer"></div>
+  <div style="flex:1"></div>
+  <span id="connIndicator" style="font-size:11px;color:var(--muted);margin-right:8px"></span>
+  <button onclick="reconnectToServer()" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px;margin-right:12px;-webkit-app-region:no-drag" title="Verbindung neu aufbauen">↻</button>
 </div>
 
 <div class="layout">
@@ -29,7 +32,10 @@
     <div class="main-tab active" id="main-servers">
       <div style="display:flex;justify-content:space-between;align-items:center;padding:24px 24px 0">
         <h2>Server</h2>
-        <button class="btn btn-primary" onclick="openAddServer()">+ Server hinzufügen</button>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost" onclick="reloadServerList()">↻ Aktualisieren</button>
+          <button class="btn btn-primary" onclick="openAddServer()">+ Server hinzufügen</button>
+        </div>
       </div>
       <div id="serverList" class="server-list" style="padding:16px 24px 24px"></div>
     </div>
@@ -42,7 +48,7 @@
         <button class="sub-btn" onclick="showSubTab('logs', this)">Logs</button>
         <button class="sub-btn" onclick="showSubTab('rcon', this)">RCON & Spieler</button>
         <button class="sub-btn" onclick="showSubTab('files', this)">Files</button>
-        <button class="sub-btn" onclick="showSubTab('mods', this)">Mods</button>
+        <button class="sub-btn" onclick="showSubTab('mods', this)">Additional Content</button>
         <button class="sub-btn" onclick="showSubTab('whitelist', this)">Whitelist</button>
         <button class="sub-btn" onclick="showSubTab('serversettings', this)">Einstellungen</button>
         <button class="sub-btn" onclick="showSubTab('backup', this)">Backup</button>
@@ -61,11 +67,12 @@
             </div>
           </div>
           <div style="display:flex;flex-direction:column;gap:6px;flex:1">
-            <div style="display:flex;gap:12px;align-items:center">
+            <div style="display:flex;gap:12px;align-items:center;flex-shrink:0">
               <div class="status-dot" id="detailDot"></div>
               <h2 id="detailName">Server</h2>
               <span id="detailStatus" style="font-size:13px;color:var(--muted)">Gestoppt</span>
               <div style="flex:1"></div>
+              <button class="btn btn-ghost" onclick="reloadServerList()" title="Status aktualisieren">↻</button>
               <button class="btn btn-primary" id="detailBtnStart" onclick="startActiveServer()">▶ Starten</button>
               <button class="btn btn-danger" id="detailBtnStop" onclick="stopActiveServer()" style="display:none">■ Stoppen</button>
             </div>
@@ -430,12 +437,18 @@
 
     <!-- ══ EINSTELLUNGEN ══ -->
     <div class="main-tab" id="main-settings">
-      <div style="padding:24px">
+      <div style="padding:24px;display:flex;flex-direction:column;gap:20px">
         <h2>Einstellungen</h2>
-        <p style="color:var(--muted);font-size:13px;margin-top:12px">Farbauswahl, Hotkeys und weitere Optionen folgen hier.</p>
+
+        <div class="card" style="display:flex;flex-direction:column;gap:10px">
+          <h3>App-Modus</h3>
+          <p id="currentModeText" style="font-size:13px;color:var(--muted)">Lädt...</p>
+          <div><button class="btn btn-ghost" onclick="switchAppMode()">↻ Modus wechseln</button></div>
+        </div>
+
+        <p style="color:var(--muted);font-size:13px">Farbauswahl, Hotkeys und weitere Optionen folgen hier.</p>
       </div>
     </div>
-
   </main>
 </div>
 
@@ -584,5 +597,22 @@
 </div>
 
 <div id="toast-container"></div>
+
+<!-- CONFIG EDITOR MODAL -->
+<div id="configModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.72);z-index:600;align-items:flex-start;justify-content:center;padding-top:56px">
+  <div style="width:740px;max-height:82vh;background:var(--bg1);border:1px solid var(--border);border-radius:14px;display:flex;flex-direction:column;overflow:hidden">
+    <div style="display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border);background:var(--bg2);flex-shrink:0">
+      <span id="configModalTitle" style="font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Keine Datei</span>
+      <button class="btn btn-success" style="padding:5px 14px;font-size:12px" onclick="saveConfigModal()">✓ Speichern</button>
+      <button class="btn btn-ghost"   style="padding:5px 12px;font-size:12px" onclick="closeConfigModal()">✕</button>
+    </div>
+    <div style="display:flex;flex:1;min-height:0;overflow:hidden">
+      <div id="configFileList" style="display:none;flex-direction:column;width:210px;flex-shrink:0;border-right:1px solid var(--border);overflow-y:auto;padding:8px;gap:4px;background:var(--bg1)"></div>
+      <textarea id="configModalArea" spellcheck="false"
+        style="flex:1;min-height:440px;background:var(--bg0);color:var(--text);font-family:'JetBrains Mono',monospace;font-size:13px;line-height:1.7;padding:16px;border:none;outline:none;resize:none;tab-size:2;overflow:auto;user-select:text"
+        placeholder="Wähle eine Datei aus der Liste..."></textarea>
+    </div>
+  </div>
+</div>
 </body>
 </html>

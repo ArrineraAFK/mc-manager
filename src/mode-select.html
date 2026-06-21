@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'">
+  <title>MC Manager — Modus wählen</title>
+  <link rel="stylesheet" href="./index.css">
+</head>
+<body style="align-items:center;justify-content:center;display:flex;overflow-y:auto;padding:20px 0">
+
+<div style="display:flex;flex-direction:column;gap:24px;width:520px;padding:24px">
+  <div style="text-align:center">
+    <h1 style="font-size:22px;color:var(--accent);letter-spacing:0.05em">MC MANAGER</h1>
+    <p style="font-size:13px;color:var(--muted);margin-top:8px">Wie möchtest du die App nutzen?</p>
+  </div>
+
+  <div style="display:flex;gap:16px">
+    <button class="mode-card" onclick="selectMode('server')">
+      <span style="font-size:32px">🖥</span>
+      <span style="font-weight:700;font-size:14px">Diesen PC als Server nutzen</span>
+      <span style="font-size:11px;color:var(--muted);text-align:center">Minecraft-Server hier hosten und verwalten</span>
+    </button>
+    <button class="mode-card" onclick="selectMode('client')">
+      <span style="font-size:32px">📡</span>
+      <span style="font-weight:700;font-size:14px">Mit Server verbinden</span>
+      <span style="font-size:11px;color:var(--muted);text-align:center">Einen Server-PC im Netzwerk fernsteuern</span>
+    </button>
+  </div>
+
+  <!-- Client-Verbindungsformular (erscheint nach Klick auf "Mit Server verbinden") -->
+  <div id="clientForm" style="display:none;flex-direction:column;gap:12px;background:var(--bg1);border:1px solid var(--border);border-radius:12px;padding:20px">
+    <h3 style="margin:0">Verbindung zum Server</h3>
+    <div class="col">
+      <label>Server-IP / Adresse</label>
+      <input type="text" id="connHost" placeholder="192.168.1.50" autofocus>
+    </div>
+    <div class="col">
+      <label>Port</label>
+      <input type="number" id="connPort" placeholder="4127" value="4127">
+    </div>
+    <div class="col">
+      <label>Passwort</label>
+      <input type="password" id="connPass" placeholder="Server-Passwort">
+    </div>
+    <div id="connError" style="display:none;font-size:12px;color:var(--accent3)"></div>
+    <div class="row" style="justify-content:flex-end;margin-top:4px">
+      <button class="btn btn-ghost" onclick="cancelClientForm()">Zurück</button>
+      <button class="btn btn-primary" onclick="connectToServer()">Verbinden</button>
+    </div>
+  </div>
+</div>
+
+<style>
+.mode-card {
+  flex: 1;
+  background: var(--bg1);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 28px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s, transform 0.15s;
+}
+.mode-card:hover {
+  border-color: var(--accent);
+  background: var(--bg2);
+  transform: translateY(-2px);
+}
+</style>
+
+<script src="./mode-select.js" defer></script>
+</body>
+</html>

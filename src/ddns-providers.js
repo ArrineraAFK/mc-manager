@@ -55,10 +55,7 @@ const DDNS_PROVIDERS = {
       const ok = status >= 200 && status < 300;
       return { ok, error: ok ? null : `HTTP ${status}: ${body.slice(0, 200)}` };
     },
-    fullDomain: ({ domain }) => {
-        const clean = domain.replace(/\.duckdns\.org$/i, '');
-        return `${clean}.duckdns.org`;
-    }
+    fullDomain: ({ displayDomain }) => displayDomain
   }
 };
 

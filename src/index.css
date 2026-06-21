@@ -370,3 +370,20 @@ select option { background: var(--bg2); }
 .props-section-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
 .prop-item { display: flex; flex-direction: column; gap: 4px; }
 .prop-item input { width: 100%; }
+
+/* Slider */
+input[type="range"] { -webkit-appearance: none; appearance: none; height: 5px; border-radius: 3px; background: var(--bg3); outline: none; cursor: pointer; border: none; padding: 0; }
+input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 16px; height: 16px; border-radius: 50%; background: var(--accent); cursor: pointer; border: 2px solid var(--bg1); }
+input[type="range"]:focus { border-color: transparent; box-shadow: none; }
+
+/* Resource-Pack list in settings */
+.rp-list-entry { display:flex; align-items:center; gap:8px; padding:7px 10px; background:var(--bg2); border:1px solid var(--border); border-radius:8px; transition: border-color 0.2s; }
+.rp-list-entry.active { border-color: var(--accent); background: rgba(124,140,248,0.08); }
+.rp-list-entry-info { flex:1; min-width:0; }
+.rp-list-entry-name { font-size:12px; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.rp-list-entry-url  { font-size:10px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:'JetBrains Mono',monospace; }
+
+/* Config file list sidebar */
+.config-file-btn { background:var(--bg2); border:1px solid var(--border); border-radius:6px; color:var(--muted); font-family:'JetBrains Mono',monospace; font-size:11px; padding:6px 10px; cursor:pointer; text-align:left; transition:background 0.15s,color 0.15s; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.config-file-btn:hover { background:var(--bg3); color:var(--text); }
+.config-file-btn.active { border-color:var(--accent); color:var(--accent); background:rgba(124,140,248,0.08); }

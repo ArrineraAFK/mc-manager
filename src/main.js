@@ -9,6 +9,12 @@ let mainWindow;
 let tray = null;
 let forceQuit = false;
 
+let modeWindow = null;
+const httpServer = require('http');
+let remoteServer = null;
+let wsServer = null;
+const wsClients = new Set();
+
 // ── Multi-Server State ────────────────────────────────────────────
 // servers: { [id]: { config, process, rcon } }
 const servers = {};
@@ -19,8 +25,9 @@ function sid() {
 console.log('=== MC MANAGER GESTARTET ===');
 // ── Window ────────────────────────────────────────────────────────
 function createWindow() {
+  const preloadFile = prefs.appMode === 'client' ? 'preload-client.js' : 'preload.js';
+
   mainWindow = new BrowserWindow({
-    
     width: 1280,
     height: 820,
     minWidth: 960,
@@ -29,7 +36,7 @@ function createWindow() {
     titleBarStyle: 'hidden',
     titleBarOverlay: { color: '#0f1117', symbolColor: '#7c8cf8', height: 36 },
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, preloadFile),
       contextIsolation: true,
       nodeIntegration: false
     }
@@ -40,6 +47,871 @@ function createWindow() {
     if (!forceQuit) { e.preventDefault(); mainWindow.hide(); }
   });
 }
+
+function broadcast(channel, data) {
+  console.log('BROADCAST:', channel, JSON.stringify(data).slice(0, 100), 'mainWindow vorhanden:', !!mainWindow, 'wsClients:', wsClients.size);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, data);
+  }
+  wsSend({ type: channel, ...data });
+}
+
+// ── App-Modus (Server/Client) ─────────────────────────────────────
+function createModeSelectWindow() {
+  modeWindow = new BrowserWindow({
+    width: 600,
+    height: 480,
+    resizable: false,
+    backgroundColor: '#0f1117',
+    titleBarStyle: 'hidden',
+    titleBarOverlay: { color: '#0f1117', symbolColor: '#7c8cf8', height: 36 },
+    webPreferences: {
+      preload: path.join(__dirname, 'mode-select-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+  modeWindow.loadFile(path.join(__dirname, 'mode-select.html'));
+}
+
+function startRemoteServer(port) {
+  if (remoteServer) return; // läuft schon
+
+  remoteServer = httpServer.createServer(async (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST');
+
+    if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+
+    let body = '';
+    req.on('data', d => body += d);
+    req.on('end', async () => {
+      try {
+        const url = new URL(req.url, `http://${req.headers.host}`);
+        const data = body ? JSON.parse(body) : {};
+        const result = await handleRemoteRequest(url.pathname, data);
+        res.writeHead(result.status || 200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result.body));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    });
+  });
+
+  remoteServer.listen(port, () => {
+    console.log(`=== Remote-Server läuft auf Port ${port} ===`);
+  });
+
+  // ── WebSocket (simple, ohne externe Lib) ──────────────────────
+  remoteServer.on('upgrade', (req, socket, head) => {
+    const crypto = require('crypto');
+    const key = req.headers['sec-websocket-key'];
+    const acceptKey = crypto.createHash('sha1')
+      .update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11')
+      .digest('base64');
+
+    socket.write(
+      'HTTP/1.1 101 Switching Protocols\r\n' +
+      'Upgrade: websocket\r\n' +
+      'Connection: Upgrade\r\n' +
+      `Sec-WebSocket-Accept: ${acceptKey}\r\n\r\n`
+    );
+
+    wsClients.add(socket);
+    socket.on('close', () => wsClients.delete(socket));
+    socket.on('error', () => wsClients.delete(socket));
+  });
+}
+
+function wsSend(obj) {
+  const json = JSON.stringify(obj);
+  const payload = Buffer.from(json);
+  const len = payload.length;
+
+  let header;
+  if (len < 126) {
+    header = Buffer.from([0x81, len]);
+  } else if (len < 65536) {
+    header = Buffer.alloc(4);
+    header[0] = 0x81; header[1] = 126;
+    header.writeUInt16BE(len, 2);
+  } else {
+    header = Buffer.alloc(10);
+    header[0] = 0x81; header[1] = 127;
+    header.writeUInt32BE(0, 2);
+    header.writeUInt32BE(len, 6);
+  }
+
+  const frame = Buffer.concat([header, payload]);
+  for (const socket of wsClients) {
+    try { socket.write(frame); } catch (_) { wsClients.delete(socket); }
+  }
+}
+
+function stopRemoteServer() {
+  if (remoteServer) { remoteServer.close(); remoteServer = null; }
+  wsClients.forEach(s => { try { s.destroy(); } catch(_){} });
+  wsClients.clear();
+}
+
+// ── Remote-Request-Router ────────────────────────────────────────
+async function handleRemoteRequest(pathname, data) {
+  if (pathname === '/api/ping') {
+    return { status: 200, body: { ok: true } };
+  }
+
+  if (pathname === '/api/servers-load') {
+    if (!fs.existsSync(configPath)) return { status: 200, body: { ok: true, servers: [] } };
+    const list = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    return { status: 200, body: { ok: true, servers: list } };
+  }
+
+  if (pathname === '/api/server-start') {
+    const res = await remoteServerStart(data);
+    return { status: 200, body: res };
+  }
+
+  if (pathname === '/api/server-status') {
+    const status = {};
+    for (const [id, s] of Object.entries(servers)) {
+      if (s.process) {
+        status[id] = { running: true, phase: s.phase || 'starting' };
+      }
+    }
+    return { status: 200, body: { ok: true, status } };
+  }
+
+  if (pathname === '/api/server-stop') {
+    const res = await remoteServerStop(data.id);
+    return { status: 200, body: res };
+  }
+
+  if (pathname === '/api/server-command') {
+    const s = servers[data.id];
+    if (!s?.process) return { status: 200, body: { ok: false, error: 'Server nicht aktiv.' } };
+    s.process.stdin.write(data.cmd + '\n');
+    return { status: 200, body: { ok: true } };
+  }
+
+  if (pathname === '/api/servers-save') {
+    try {
+      fs.writeFileSync(configPath, JSON.stringify(data.list, null, 2), 'utf8');
+      return { status: 200, body: { ok: true } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  // ── Properties ──────────────────────────────────────────────────
+  if (pathname === '/api/props-read') {
+    const file = path.join(data.serverPath, 'server.properties');
+    if (!fs.existsSync(file)) return { status: 200, body: { ok: true, props: {} } };
+    const content = fs.readFileSync(file, 'utf8');
+    const props = {};
+    content.split('\n').forEach(l => {
+      const line = l.trim();
+      if (!line || line.startsWith('#')) return;
+      const idx = line.indexOf('=');
+      if (idx > 0) props[line.slice(0, idx)] = line.slice(idx + 1);
+    });
+    return { status: 200, body: { ok: true, props } };
+  }
+
+  if (pathname === '/api/props-write') {
+    try {
+      const file = path.join(data.serverPath, 'server.properties');
+      const lines = [];
+      for (const [k, v] of Object.entries(data.props)) lines.push(`${k}=${v}`);
+      fs.writeFileSync(file, lines.join('\n') + '\n', 'utf8');
+      return { status: 200, body: { ok: true } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  // ── Mods ────────────────────────────────────────────────────────
+  if (pathname === '/api/mods-scan') {
+    try {
+      const scanDir = dir => {
+        if (!fs.existsSync(dir)) return [];
+        return fs.readdirSync(dir, { withFileTypes: true })
+          .filter(e => e.isFile() && (e.name.endsWith('.jar') || e.name.endsWith('.jar.disabled')))
+          .map(e => {
+            const fullPath = path.join(dir, e.name);
+            const stat = fs.statSync(fullPath);
+            const disabled = e.name.endsWith('.jar.disabled');
+            const cleanName = e.name.replace('.jar.disabled', '').replace('.jar', '');
+            const lower = cleanName.toLowerCase();
+            let loader = 'Unknown';
+            if (lower.includes('fabric') || lower.includes('sodium') || lower.includes('lithium') || lower.includes('iris')) loader = 'Fabric';
+            else if (lower.includes('neoforge') || lower.includes('neo')) loader = 'NeoForge';
+            else if (lower.includes('forge') || lower.includes('-forge-')) loader = 'Forge';
+            else if (lower.includes('paper') || lower.includes('bukkit') || lower.includes('spigot')) loader = 'Paper';
+            else if (lower.includes('quilt')) loader = 'Quilt';
+            const versionMatch = cleanName.match(/[\-_](\d+\.\d+[\.\d]*)/);
+            return {
+              name: cleanName, file: e.name, path: fullPath,
+              folder: path.basename(dir),
+              sizeMB: (stat.size / 1024 / 1024).toFixed(2),
+              disabled, loader, version: versionMatch ? versionMatch[1] : null,
+            };
+          });
+      };
+      const mods = [...scanDir(path.join(data.serverPath, 'mods')), ...scanDir(path.join(data.serverPath, 'plugins'))];
+      return { status: 200, body: { ok: true, mods } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  if (pathname === '/api/mod-toggle') {
+    try {
+      if (data.disabled) fs.renameSync(data.modPath, data.modPath.replace('.jar.disabled', '.jar'));
+      else fs.renameSync(data.modPath, data.modPath + '.disabled');
+      return { status: 200, body: { ok: true } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  if (pathname === '/api/mod-delete') {
+    try { fs.unlinkSync(data.modPath); return { status: 200, body: { ok: true } }; }
+    catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  if (pathname === '/api/mod-config-files') {
+    const EDITABLE_EXT = ['.json','.properties','.txt','.yml','.yaml','.toml','.cfg','.conf','.md','.sh','.bat'];
+    const clean = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const files = [];
+    try {
+      if (data.type === 'plugins') {
+        const pluginDir = path.join(data.serverPath, 'plugins', data.modName);
+        if (fs.existsSync(pluginDir)) {
+          const walk = dir => {
+            for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+              const full = path.join(dir, e.name);
+              if (e.isDirectory()) walk(full);
+              else if (EDITABLE_EXT.some(ext => e.name.endsWith(ext))) {
+                files.push({ name: path.relative(pluginDir, full), path: full });
+              }
+            }
+          };
+          walk(pluginDir);
+        }
+      } else {
+        const configDir = path.join(data.serverPath, 'config');
+        if (fs.existsSync(configDir)) {
+          const modClean = clean(data.modName);
+          const walk = dir => {
+            for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+              const full = path.join(dir, e.name);
+              if (e.isDirectory()) {
+                if (clean(e.name).includes(modClean) || modClean.includes(clean(e.name))) walk(full);
+              } else if (clean(e.name).includes(modClean) && EDITABLE_EXT.some(ext => e.name.endsWith(ext))) {
+                files.push({ name: path.relative(configDir, full), path: full });
+              }
+            }
+          };
+          walk(configDir);
+        }
+      }
+      return { status: 200, body: { ok: true, files } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  // ── RCON ────────────────────────────────────────────────────────
+  if (pathname === '/api/rcon-connect') {
+    try {
+      if (!servers[data.id]) servers[data.id] = {};
+      const rcon = new Rcon({ host: data.host || '127.0.0.1', port: parseInt(data.port), password: data.password });
+      await rcon.connect();
+      servers[data.id].rcon = rcon;
+      return { status: 200, body: { ok: true } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  if (pathname === '/api/rcon-send') {
+    const rcon = servers[data.id]?.rcon;
+    if (!rcon) return { status: 200, body: { ok: false, error: 'RCON nicht verbunden.' } };
+    try {
+      const response = await rcon.send(data.cmd);
+      return { status: 200, body: { ok: true, response } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  // ── File Browser ────────────────────────────────────────────────
+  if (pathname === '/api/files-list') {
+    try {
+      const entries = fs.readdirSync(data.currentPath, { withFileTypes: true }).map(e => {
+        const fullPath = path.join(data.currentPath, e.name);
+        let size = '';
+        if (e.isFile()) {
+          const stat = fs.statSync(fullPath);
+          size = stat.size > 1024 * 1024
+            ? (stat.size / 1024 / 1024).toFixed(1) + ' MB'
+            : (stat.size / 1024).toFixed(0) + ' KB';
+        }
+        return { name: e.name, path: fullPath, isDir: e.isDirectory(), size };
+      });
+      const canGoUp = data.currentPath !== data.rootPath;
+      const parentPath = path.dirname(data.currentPath);
+      return { status: 200, body: { ok: true, entries, canGoUp, parentPath } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  if (pathname === '/api/file-read') {
+    try {
+      const content = fs.readFileSync(data.filePath, 'utf8');
+      return { status: 200, body: { ok: true, content } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  if (pathname === '/api/file-write') {
+    try {
+      fs.writeFileSync(data.filePath, data.content, 'utf8');
+      return { status: 200, body: { ok: true } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  if (pathname === '/api/file-delete') {
+    try {
+      if (data.isDir) fs.rmSync(data.filePath, { recursive: true, force: true });
+      else fs.unlinkSync(data.filePath);
+      return { status: 200, body: { ok: true } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  if (pathname === '/api/file-rename') {
+    try {
+      const dir = path.dirname(data.filePath);
+      const newPath = path.join(dir, data.newName);
+      fs.renameSync(data.filePath, newPath);
+      return { status: 200, body: { ok: true } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  if (pathname === '/api/file-create') {
+    try {
+      const newPath = path.join(data.parentPath, data.name);
+      if (data.isDir) fs.mkdirSync(newPath, { recursive: true });
+      else fs.writeFileSync(newPath, '', 'utf8');
+      return { status: 200, body: { ok: true, path: newPath } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  // ── Whitelist / Banlist ─────────────────────────────────────────
+  if (pathname === '/api/list-read') {
+    try {
+      const filePath = path.join(data.serverPath, data.file);
+      if (!fs.existsSync(filePath)) return { status: 200, body: { ok: true, entries: [] } };
+      const entries = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      return { status: 200, body: { ok: true, entries } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  if (pathname === '/api/list-add') {
+    try {
+      const filePath = path.join(data.serverPath, data.file);
+      const arr = fs.existsSync(filePath) ? JSON.parse(fs.readFileSync(filePath, 'utf8')) : [];
+      if (!arr.find(e => e.name === data.name)) {
+        arr.push({ name: data.name, uuid: '' });
+        fs.writeFileSync(filePath, JSON.stringify(arr, null, 2), 'utf8');
+      }
+      return { status: 200, body: { ok: true } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  if (pathname === '/api/list-remove') {
+    try {
+      const filePath = path.join(data.serverPath, data.file);
+      if (!fs.existsSync(filePath)) return { status: 200, body: { ok: true } };
+      const arr = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      fs.writeFileSync(filePath, JSON.stringify(arr.filter(e => e.name !== data.name), null, 2), 'utf8');
+      return { status: 200, body: { ok: true } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  // ── EULA ────────────────────────────────────────────────────────
+  if (pathname === '/api/eula-check') {
+    const eulaPath = path.join(data.serverPath, 'eula.txt');
+    if (!fs.existsSync(eulaPath)) return { status: 200, body: { ok: true, accepted: false, exists: false } };
+    const accepted = fs.readFileSync(eulaPath, 'utf8').includes('eula=true');
+    return { status: 200, body: { ok: true, accepted, exists: true } };
+  }
+
+  if (pathname === '/api/eula-accept') {
+    try {
+      const eulaPath = path.join(data.serverPath, 'eula.txt');
+      fs.writeFileSync(eulaPath, '# Minecraft EULA akzeptiert via MC Manager\n# https://aka.ms/MinecraftEULA\neula=true\n', 'utf8');
+      return { status: 200, body: { ok: true } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  // ── Players (RCON) ──────────────────────────────────────────────
+  if (pathname === '/api/players-list') {
+    const rcon = servers[data.id]?.rcon;
+    if (!rcon) return { status: 200, body: { ok: false, error: 'RCON nicht verbunden.' } };
+    try {
+      const response = await rcon.send('list');
+      const match = response.match(/players online:\s*(.+)/i);
+      const names = match && match[1].trim() !== '' ? match[1].split(',').map(n => n.trim()).filter(Boolean) : [];
+      const countMatch = response.match(/There are (\d+)/i);
+      const count = countMatch ? parseInt(countMatch[1]) : names.length;
+      return { status: 200, body: { ok: true, players: names, count, raw: response } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  if (pathname === '/api/player-kick') {
+    const rcon = servers[data.id]?.rcon;
+    if (!rcon) return { status: 200, body: { ok: false, error: 'RCON nicht verbunden.' } };
+    try { await rcon.send(data.reason ? `kick ${data.name} ${data.reason}` : `kick ${data.name}`); return { status: 200, body: { ok: true } }; }
+    catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  if (pathname === '/api/player-ban') {
+    const rcon = servers[data.id]?.rcon;
+    if (!rcon) return { status: 200, body: { ok: false, error: 'RCON nicht verbunden.' } };
+    try { await rcon.send(data.reason ? `ban ${data.name} ${data.reason}` : `ban ${data.name}`); return { status: 200, body: { ok: true } }; }
+    catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  if (pathname === '/api/player-op') {
+    const rcon = servers[data.id]?.rcon;
+    if (!rcon) return { status: 200, body: { ok: false, error: 'RCON nicht verbunden.' } };
+    try { await rcon.send(`op ${data.name}`); return { status: 200, body: { ok: true } }; }
+    catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  // ── Stats ───────────────────────────────────────────────────────
+  if (pathname === '/api/get-stats') {
+    const s = servers[data.id];
+    if (!s?.process) return { status: 200, body: { ok: false, error: 'Kein Prozess.' } };
+    try {
+      const pidusage = require('pidusage');
+      const stat = await pidusage(s.process.pid);
+      let players = null, tps = null;
+      if (s.rcon) {
+        try {
+          const listRes = await s.rcon.send('list');
+          const m = listRes.match(/There are (\d+)/i);
+          if (m) players = parseInt(m[1]);
+          const tpsRes = await s.rcon.send('tps');
+          const tm = tpsRes.match(/([\d.]+),/);
+          if (tm) tps = parseFloat(tm[1]);
+        } catch (_) {}
+      }
+      return { status: 200, body: { ok: true, memory: stat.memory, cpu: stat.cpu, players, tps } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  // ── Diagnose / Repair ───────────────────────────────────────────
+  if (pathname === '/api/diagnose') {
+    const checks = [];
+    const jarPath = path.join(data.serverPath, data.jar || 'server.jar');
+    checks.push({ key: 'jar', label: `JAR (${data.jar || 'server.jar'})`, ok: fs.existsSync(jarPath) });
+    const eulaPath = path.join(data.serverPath, 'eula.txt');
+    const eulaAccepted = fs.existsSync(eulaPath) && fs.readFileSync(eulaPath, 'utf8').includes('eula=true');
+    checks.push({ key: 'eula', label: 'EULA akzeptiert', ok: eulaAccepted });
+    checks.push({ key: 'props', label: 'server.properties', ok: fs.existsSync(path.join(data.serverPath, 'server.properties')) });
+    checks.push({ key: 'world', label: 'World-Ordner', ok: fs.existsSync(path.join(data.serverPath, 'world')), warn: !fs.existsSync(path.join(data.serverPath, 'world')) });
+    return { status: 200, body: { ok: true, checks } };
+  }
+
+  if (pathname === '/api/repair') {
+    try {
+      const eulaPath = path.join(data.serverPath, 'eula.txt');
+      if (!fs.existsSync(eulaPath) || !fs.readFileSync(eulaPath, 'utf8').includes('eula=true')) {
+        fs.writeFileSync(eulaPath, '# Auto-repaired by MC Manager\neula=true\n', 'utf8');
+      }
+      const propsPath = path.join(data.serverPath, 'server.properties');
+      if (!fs.existsSync(propsPath)) {
+        fs.writeFileSync(propsPath, ['server-port=25565','max-players=20','level-name=world','online-mode=true','difficulty=easy','gamemode=survival','enable-rcon=false','rcon.port=25575'].join('\n'), 'utf8');
+      }
+      return { status: 200, body: { ok: true } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  // ── Backup ──────────────────────────────────────────────────────
+  if (pathname === '/api/backup-create') {
+    try {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const dest = path.join(data.backupPath, `backup-${timestamp}`);
+      const copyDir = (src, dst) => {
+        fs.mkdirSync(dst, { recursive: true });
+        for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+          const s = path.join(src, entry.name), d = path.join(dst, entry.name);
+          if (entry.isDirectory()) copyDir(s, d); else fs.copyFileSync(s, d);
+        }
+      };
+      copyDir(data.serverPath, dest);
+      return { status: 200, body: { ok: true, dest } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  // ── Resource Packs ──────────────────────────────────────────────
+  if (pathname === '/api/rp-scan') {
+    try {
+      const rpDir = path.join(data.serverPath, 'resourcepacks');
+      if (!fs.existsSync(rpDir)) return { status: 200, body: { ok: true, packs: [] } };
+      const packs = fs.readdirSync(rpDir, { withFileTypes: true })
+        .filter(e => e.isFile() && (e.name.endsWith('.zip') || e.name.endsWith('.zip.disabled')))
+        .map(e => {
+          const fullPath = path.join(rpDir, e.name);
+          const stat = fs.statSync(fullPath);
+          const disabled = e.name.endsWith('.zip.disabled');
+          return { name: e.name.replace('.zip.disabled', '').replace('.zip', ''), file: e.name, path: fullPath, sizeMB: (stat.size / 1024 / 1024).toFixed(2), disabled };
+        });
+      return { status: 200, body: { ok: true, packs } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  if (pathname === '/api/rp-toggle') {
+    try {
+      if (data.disabled) fs.renameSync(data.rpPath, data.rpPath.replace('.zip.disabled', '.zip'));
+      else fs.renameSync(data.rpPath, data.rpPath + '.disabled');
+      return { status: 200, body: { ok: true } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  if (pathname === '/api/rp-delete') {
+    try { fs.unlinkSync(data.rpPath); return { status: 200, body: { ok: true } }; }
+    catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  // ── Icon ────────────────────────────────────────────────────────
+  if (pathname === '/api/icon-load') {
+    try {
+      const iconPath = path.join(data.serverPath, 'server-icon.png');
+      if (!fs.existsSync(iconPath)) return { status: 200, body: { ok: false } };
+      const base64 = fs.readFileSync(iconPath).toString('base64');
+      return { status: 200, body: { ok: true, data: `data:image/png;base64,${base64}` } };
+    } catch (_) { return { status: 200, body: { ok: false } }; }
+  }
+
+  // ── Hangar / Modrinth ───────────────────────────────────────────
+  if (pathname === '/api/hangar-search') {
+    try {
+      const params = new URLSearchParams({ q: data.query || '', platform: data.platform || 'PAPER', limit: '20', offset: '0', sort: data.query ? '-relevance' : '-downloads' });
+      const r = await httpsGet(`https://hangar.papermc.io/api/v1/projects?${params}`);
+      if (r.status !== 200) return { status: 200, body: { ok: false, error: `Hangar API Fehler: ${r.status}` } };
+      return { status: 200, body: { ok: true, plugins: JSON.parse(r.body).result || [] } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  if (pathname === '/api/hangar-install') {
+    try {
+      const versionsUrl = `https://hangar.papermc.io/api/v1/projects/${data.owner}/${data.name}/versions`;
+      const r = await httpsGet(versionsUrl + '?limit=10&offset=0');
+      if (r.status !== 200) return { status: 200, body: { ok: false, error: 'Versionen nicht gefunden.' } };
+      const versions = (JSON.parse(r.body).result || []);
+      if (!versions.length) return { status: 200, body: { ok: false, error: 'Keine Version verfügbar.' } };
+      let ver = versions.find(v => v.supportedVersions?.includes(data.version)) || versions[0];
+      const downloadUrl = `https://hangar.papermc.io/api/v1/projects/${data.owner}/${data.name}/versions/${ver.name}/PAPER/download`;
+      const pluginsDir = path.join(data.serverPath, 'plugins');
+      fs.mkdirSync(pluginsDir, { recursive: true });
+      const filename = `${data.name}-${ver.name}.jar`;
+      await httpsDownload(downloadUrl, path.join(pluginsDir, filename), () => {});
+      return { status: 200, body: { ok: true, filename } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  if (pathname === '/api/modrinth-search') {
+    try {
+      const facets = [['project_type:' + data.type]];
+      if (data.loader) facets.push([`categories:${data.loader}`]);
+      if (data.version) facets.push([`versions:${data.version}`]);
+      const params = new URLSearchParams({ query: data.query || '', limit: String(data.limit || 20), offset: String(data.offset || 0), index: data.query ? 'relevance' : 'downloads', facets: JSON.stringify(facets) });
+      const r = await httpsGet(`https://api.modrinth.com/v2/search?${params}`);
+      if (r.status !== 200) return { status: 200, body: { ok: false, error: `API Fehler: ${r.status}` } };
+      const d = JSON.parse(r.body);
+      return { status: 200, body: { ok: true, hits: d.hits, total_hits: d.total_hits } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  if (pathname === '/api/modrinth-install') {
+    try {
+      const versionsUrl = `https://api.modrinth.com/v2/project/${data.projectId}/version`;
+      const params = new URLSearchParams();
+      if (data.loader) params.set('loaders', JSON.stringify([data.loader]));
+      if (data.version) params.set('game_versions', JSON.stringify([data.version]));
+      const r = await httpsGet(`${versionsUrl}?${params}`);
+      if (r.status !== 200) return { status: 200, body: { ok: false, error: 'Versionen konnten nicht geladen werden.' } };
+      const versions = JSON.parse(r.body);
+      if (!versions.length) return { status: 200, body: { ok: false, error: 'Keine kompatible Version gefunden.' } };
+      const ver = versions[0];
+      const file = ver.files.find(f => f.primary) || ver.files[0];
+      if (!file) return { status: 200, body: { ok: false, error: 'Keine Datei gefunden.' } };
+      const isPlugin = ['paper','purpur','spigot','bukkit'].includes(data.loader?.toLowerCase());
+      const targetDir = path.join(data.serverPath, isPlugin ? 'plugins' : 'mods');
+      fs.mkdirSync(targetDir, { recursive: true });
+      await httpsDownload(file.url, path.join(targetDir, file.filename), () => {});
+      return { status: 200, body: { ok: true, filename: file.filename } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  // ── Stats Persistence ───────────────────────────────────────────
+  if (pathname === '/api/stats-load') {
+    try {
+      const d = cleanOldStats(loadStatsFile(data.id));
+      return { status: 200, body: { ok: true, history: { ram: d.ram, cpu: d.cpu, tps: d.tps }, joins: d.joins } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  if (pathname === '/api/stats-append-point') {
+    try {
+      const d = loadStatsFile(data.id);
+      if (!d[data.key]) d[data.key] = [];
+      d[data.key].push({ ts: data.ts, v: data.v });
+      const cleaned = cleanOldStats(d);
+      fs.writeFileSync(statsPath(data.id), JSON.stringify(cleaned), 'utf8');
+      return { status: 200, body: { ok: true } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  if (pathname === '/api/stats-append-join') {
+    try {
+      const d = loadStatsFile(data.id);
+      d.joins.push(data.entry);
+      const cleaned = cleanOldStats(d);
+      fs.writeFileSync(statsPath(data.id), JSON.stringify(cleaned), 'utf8');
+      return { status: 200, body: { ok: true } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  // ── Delete Server Folder ────────────────────────────────────────
+  if (pathname === '/api/delete-server-folder') {
+    try {
+      fs.rmSync(data.serverPath, { recursive: true, force: true });
+      return { status: 200, body: { ok: true } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  // ── Get Local/IPv6 (Host-Seite) ─────────────────────────────────
+  if (pathname === '/api/get-local-ip') {
+    const os = require('os');
+    const interfaces = os.networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+      for (const iface of interfaces[name]) {
+        if (iface.family === 'IPv4' && !iface.internal) return { status: 200, body: { ok: true, ip: iface.address } };
+      }
+    }
+    return { status: 200, body: { ok: true, ip: 'localhost' } };
+  }
+
+  if (pathname === '/api/get-ipv6') {
+    const os = require('os');
+    const interfaces = os.networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+      for (const iface of interfaces[name]) {
+        if (iface.family === 'IPv6' && !iface.internal && !iface.address.startsWith('fe80')) {
+          return { status: 200, body: { ok: true, ip: iface.address } };
+        }
+      }
+    }
+    return { status: 200, body: { ok: false, error: 'Keine öffentliche IPv6 gefunden.' } };
+  }
+
+  // ── UPnP ─────────────────────────────────────────────────────────
+  if (pathname === '/api/upnp-map') {
+    try {
+      const os = require('os');
+      let localIp = '127.0.0.1';
+      for (const ifaces of Object.values(os.networkInterfaces())) {
+        for (const iface of ifaces) {
+          if (iface.family === 'IPv4' && !iface.internal) { localIp = iface.address; break; }
+        }
+      }
+      const location = await upnpDiscover();
+      if (!location) return { status: 200, body: { ok: false, error: 'Router nicht gefunden. UPnP möglicherweise deaktiviert.' } };
+      const ctrl = await upnpFetchControlUrl(location);
+      const externalIp = await upnpGetExternalIp(ctrl);
+      const res = await upnpSoapRequest(ctrl, 'AddPortMapping', {
+        NewRemoteHost: '', NewExternalPort: data.port, NewProtocol: 'TCP',
+        NewInternalPort: data.port, NewInternalClient: localIp, NewEnabled: 1,
+        NewPortMappingDescription: `MC-Manager-${data.id}`, NewLeaseDuration: 0
+      });
+      if (res.status === 200 || res.status === 204) {
+        upnpMappings[data.id] = { port: data.port, externalIp, ctrl };
+        return { status: 200, body: { ok: true, externalIp, localIp } };
+      } else {
+        const errMatch = res.body.match(/<errorDescription>([^<]+)<\/errorDescription>/);
+        return { status: 200, body: { ok: false, error: errMatch ? errMatch[1] : `SOAP Fehler ${res.status}` } };
+      }
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  if (pathname === '/api/upnp-unmap') {
+    const mapping = upnpMappings[data.id];
+    if (!mapping) return { status: 200, body: { ok: true } };
+    try {
+      await upnpSoapRequest(mapping.ctrl, 'DeletePortMapping', {
+        NewRemoteHost: '', NewExternalPort: mapping.port, NewProtocol: 'TCP'
+      });
+      delete upnpMappings[data.id];
+      return { status: 200, body: { ok: true } };
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  if (pathname === '/api/upnp-status') {
+    const mapping = upnpMappings[data.id];
+    if (!mapping) return { status: 200, body: { ok: true, mapped: false } };
+    return { status: 200, body: { ok: true, mapped: true, externalIp: mapping.externalIp, port: mapping.port } };
+  }
+
+  // ── DDNS ────────────────────────────────────────────────────────
+  if (pathname === '/api/ddns-get-providers') {
+    return { status: 200, body: { ok: true, providers: getProviderList() } };
+  }
+
+  if (pathname === '/api/ddns-update') {
+    try {
+      const provider = getProvider(data.providerKey);
+      if (!provider) return { status: 200, body: { ok: false, error: 'Unbekannter Provider.' } };
+      const built = provider.buildUrl(data.fields);
+      let url, headers = {};
+      if (typeof built === 'string') { url = built; } else { url = built.url; headers = built.headers || {}; }
+      const r = await httpsGetWithHeaders(url, headers);
+      const result = provider.parseResponse(r.body, r.status);
+      if (result.ok) {
+        return { status: 200, body: { ok: true, fullDomain: provider.fullDomain(data.fields) } };
+      } else {
+        return { status: 200, body: { ok: false, error: result.error } };
+      }
+    } catch (e) { return { status: 200, body: { ok: false, error: e.message } }; }
+  }
+
+  return { status: 404, body: { ok: false, error: 'Unbekannter Endpunkt: ' + pathname } };
+}
+
+// Wiederverwendung der bestehenden Start/Stop-Logik, aber mit WS-Broadcast statt webContents.send
+async function remoteServerStart({ id, serverPath, ram, jarName }) {
+  if (servers[id]?.process) return { ok: false, error: 'Server läuft bereits.' };
+
+  const jar = jarName || 'server.jar';
+  const isScript = jar === 'run.bat' || jar === 'run.sh';
+  const fullPath = path.join(serverPath, jar);
+  if (!fs.existsSync(fullPath)) return { ok: false, error: `Datei nicht gefunden: ${fullPath}` };
+
+  let proc;
+  if (isScript) {
+    const argsFile = path.join(serverPath, 'user_jvm_args.txt');
+    if (fs.existsSync(argsFile)) {
+      let content = fs.readFileSync(argsFile, 'utf8');
+      content = content.replace(/-Xmx\S+/g, '').replace(/-Xms\S+/g, '');
+      content += `\n-Xmx${ram}M -Xms${ram}M\n`;
+      fs.writeFileSync(argsFile, content, 'utf8');
+    }
+    proc = process.platform === 'win32'
+      ? spawn('cmd.exe', ['/c', jar, 'nogui'], { cwd: serverPath })
+      : spawn('bash', [jar, 'nogui'], { cwd: serverPath });
+  } else {
+    proc = spawn('java', [`-Xmx${ram}M`, `-Xms${ram}M`, '-jar', jar, 'nogui'], { cwd: serverPath });
+  }
+
+  if (!servers[id]) servers[id] = {};
+  servers[id].process = proc;
+  servers[id].isScript = isScript;
+  servers[id].phase = 'starting';
+
+  if (mainWindow) mainWindow.webContents.send('server-log', { id, msg: '[MC Manager] Starting Server...\n' });
+  wsSend({ type: 'server-log', id, msg: '[MC Manager] Starting Server...\n' });
+
+  proc.stdout.on('data', d => {
+    const msg = d.toString();
+    if (msg.includes('Done (') && msg.includes('For help')) {
+      servers[id].phase = 'online'; // ← NEU
+    }
+    if (mainWindow) mainWindow.webContents.send('server-log', { id, msg });
+    wsSend({ type: 'server-log', id, msg });
+  });
+  proc.stderr.on('data', d => {
+    const msg = '[ERR] ' + d.toString();
+    if (mainWindow) mainWindow.webContents.send('server-log', { id, msg });
+    wsSend({ type: 'server-log', id, msg });
+  });
+  proc.on('close', code => {
+    if (servers[id]) { servers[id].process = null; servers[id].phase = null; }
+    if (mainWindow) mainWindow.webContents.send('server-stopped', { id, code });
+    wsSend({ type: 'server-stopped', id, code });
+  });
+
+  return { ok: true };
+}
+
+async function remoteServerStop(id) {
+  const s = servers[id];
+  if (!s?.process) return { ok: false, error: 'Server nicht aktiv.' };
+  try {
+    if (s.isScript) {
+      if (process.platform === 'win32') {
+        spawn('taskkill', ['/pid', String(s.process.pid), '/f', '/t'], { shell: false });
+      } else {
+        s.process.kill('SIGTERM');
+      }
+    } else {
+      if (s.process.stdin?.writable) {
+        s.process.stdin.write('stop\n');
+      } else {
+        s.process.kill('SIGTERM');
+      }
+    }
+  } catch (e) {
+    try { s.process.kill(); } catch (_) {}
+  }
+  return { ok: true };
+}
+
+ipcMain.handle('set-app-mode', async (_, { mode, connection }) => {
+  prefs.appMode = mode;
+  if (mode === 'client' && connection) {
+    prefs.remoteConnection = connection;
+  }
+  savePrefs();
+
+  if (modeWindow) { modeWindow.close(); modeWindow = null; }
+  createWindow();
+  createTray();
+
+  if (mode === 'server') {
+    startRemoteServer(4127);
+  }
+
+  return { ok: true };
+});
+
+ipcMain.handle('test-remote-connection', async (_, { host, port }) => {
+  try {
+    const url = `http://${host}:${port}/api/ping`;
+    const result = await new Promise((resolve, reject) => {
+      const req = http.request(url, { method: 'POST', timeout: 5000 }, (res) => {
+        let data = '';
+        res.on('data', d => data += d);
+        res.on('end', () => resolve({ status: res.statusCode, body: data }));
+      });
+      req.on('error', reject);
+      req.on('timeout', () => { req.destroy(); reject(new Error('Timeout')); });
+      req.end();
+    });
+    if (result.status === 200) return { ok: true };
+    return { ok: false, error: `Server antwortete mit Status ${result.status}` };
+  } catch (e) { return { ok: false, error: e.message || 'Server nicht erreichbar.' }; }
+});
+
+ipcMain.handle('get-app-mode', async () => {
+  return { ok: true, mode: prefs.appMode || null, connection: prefs.remoteConnection || null };
+});
+
+ipcMain.handle('reset-app-mode', async () => {
+  delete prefs.appMode;
+  delete prefs.remoteConnection;
+  savePrefs();
+
+  // Hauptfenster schließen, Mode-Select öffnen
+  if (mainWindow) {
+    forceQuit = true; // verhindert dass close-Handler das Fenster nur versteckt
+    mainWindow.close();
+    mainWindow = null;
+    forceQuit = false;
+  }
+  if (tray) { tray.destroy(); tray = null; }
+  createModeSelectWindow();
+
+  return { ok: true };
+});
 
 function createTray() {
   const iconPath = path.join(__dirname, 'icon.png');
@@ -60,9 +932,17 @@ function createTray() {
 }
 
 app.whenReady().then(() => {
-  createWindow();
-  createTray();
+  if (prefs.appMode) {
+    createWindow();
+    createTray();
+    if (prefs.appMode === 'server') {
+      startRemoteServer(4127);
+    }
+  } else {
+    createModeSelectWindow();
+  }
 });
+
 app.on('before-quit', (e) => {
   if (!forceQuit) { e.preventDefault(); return; }
   const running = Object.entries(servers).filter(([_, s]) => s.process);
@@ -472,75 +1352,13 @@ ipcMain.handle('servers-save', async (_, list) => {
 });
 
 // ── Server starten ────────────────────────────────────────────────
-ipcMain.handle('server-start', async (_, { id, serverPath, ram, jarName }) => {
-  if (servers[id]?.process) return { ok: false, error: 'Server läuft bereits.' };
-
-  const jar = jarName || 'server.jar';
-  const isScript = jar === 'run.bat' || jar === 'run.sh';
-  const fullPath = path.join(serverPath, jar);
-
-  if (!fs.existsSync(fullPath)) return { ok: false, error: `Datei nicht gefunden: ${fullPath}` };
-
-  let proc;
-  if (isScript) {
-    // RAM in user_jvm_args.txt eintragen falls vorhanden (Forge/NeoForge Standard)
-    const argsFile = path.join(serverPath, 'user_jvm_args.txt');
-    if (fs.existsSync(argsFile)) {
-      let content = fs.readFileSync(argsFile, 'utf8');
-      content = content.replace(/-Xmx\S+/g, '').replace(/-Xms\S+/g, '');
-      content += `\n-Xmx${ram}M -Xms${ram}M\n`;
-      fs.writeFileSync(argsFile, content, 'utf8');
-    }
-
-    if (process.platform === 'win32') {
-      proc = spawn('cmd.exe', ['/c', jar, 'nogui'], { cwd: serverPath });
-    } else {
-      proc = spawn('bash', [jar, 'nogui'], { cwd: serverPath });
-    }
-  } else {
-    proc = spawn('java', [`-Xmx${ram}M`, `-Xms${ram}M`, '-jar', jar, 'nogui'], { cwd: serverPath });
-  }
-
-  if (!servers[id]) servers[id] = {};
-  servers[id].process = proc;
-  servers[id].isScript = isScript;
-
-  proc.stdout.on('data', d => mainWindow.webContents.send('server-log', { id, msg: d.toString() }));
-  proc.stderr.on('data', d => mainWindow.webContents.send('server-log', { id, msg: '[ERR] ' + d.toString() }));
-  proc.on('close', code => {
-    if (servers[id]) servers[id].process = null;
-    mainWindow.webContents.send('server-stopped', { id, code });
-  });
-
-  return { ok: true };
+ipcMain.handle('server-start', async (_, opts) => {
+  return await remoteServerStart(opts);
 });
 
 // ── Server stoppen ────────────────────────────────────────────────
 ipcMain.handle('server-stop', async (_, id) => {
-  const s = servers[id];
-  if (!s?.process) return { ok: false, error: 'Server nicht aktiv.' };
-
-  try {
-    if (s.isScript) {
-      // run.bat/run.sh: cmd.exe leitet stdin nicht an Java weiter → Prozesskette killen
-      if (process.platform === 'win32') {
-        spawn('taskkill', ['/pid', String(s.process.pid), '/f', '/t'], { shell: false });
-      } else {
-        s.process.kill('SIGTERM');
-      }
-    } else {
-      // Direktes Java: stop-Befehl über stdin senden
-      if (s.process.stdin?.writable) {
-        s.process.stdin.write('stop\n');
-      } else {
-        s.process.kill('SIGTERM');
-      }
-    }
-  } catch (e) {
-    try { s.process.kill(); } catch (_) {}
-  }
-
-  return { ok: true };
+  return await remoteServerStop(id);
 });
 
 // ── Befehl senden ─────────────────────────────────────────────────
@@ -1146,6 +1964,48 @@ ipcMain.handle('dl-builds', async (_, { loader, version }) => {
     }
     return { ok: true, builds: [] };
   } catch (e) { return { ok: false, error: e.message }; }
+});
+
+// ── Mod/Plugin Config-Dateien finden ─────────────────────────────
+ipcMain.handle('mod-config-files', async (_, { serverPath, modName, type }) => {
+  const EDITABLE_EXT = ['.json','.properties','.txt','.yml','.yaml','.toml','.cfg','.conf','.md','.sh','.bat'];
+  const clean = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const files = [];
+
+  try {
+    if (type === 'plugin') {
+      const dir = path.join(serverPath, 'plugins', modName);
+      if (fs.existsSync(dir)) {
+        const scan = (d) => {
+          for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+            const fp = path.join(d, e.name);
+            if (e.isDirectory()) scan(fp);
+            else if (EDITABLE_EXT.some(x => e.name.endsWith(x)))
+              files.push({ path: fp, name: path.relative(dir, fp) });
+          }
+        };
+        scan(dir);
+      }
+    } else {
+      const dir = path.join(serverPath, 'config');
+      if (fs.existsSync(dir)) {
+        const modLower = clean(modName);
+        const scan = (d) => {
+          for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+            const fp = path.join(d, e.name);
+            if (e.isDirectory()) {
+              if (clean(e.name).includes(modLower)) scan(fp);
+            } else if (EDITABLE_EXT.some(x => e.name.endsWith(x))) {
+              if (clean(e.name).includes(modLower))
+                files.push({ path: fp, name: path.relative(dir, fp) });
+            }
+          }
+        };
+        scan(dir);
+      }
+    }
+    return { ok: true, files };
+  } catch(e) { return { ok: false, error: e.message }; }
 });
 
 // ── Download: JAR herunterladen ───────────────────────────────────

@@ -17,12 +17,48 @@ const _revealedTexts = {};
 window.addEventListener('DOMContentLoaded', async () => {
   const res = await window.mc.serversLoad();
   if (res.ok) serverList = res.servers;
+
+  // Aktuellen Laufstatus abfragen (wichtig im Client-Modus, aber auch nützlich lokal)
+  if (window.mc.getServerStatus) {
+    const statusRes = await window.mc.getServerStatus();
+    if (statusRes.ok) {
+      Object.keys(statusRes.status).forEach(id => {
+        if (statusRes.status[id].running) {
+          runningIds.add(id);
+          onlineIds.add(id); // vereinfachend: laufend = online, korrigiert sich durch Logs
+        }
+      });
+    }
+  }
+
   renderServerList();
 
-  // Command-History für beide Inputs initialisieren
   setupHistory('cmdInput',  'log',  sendCommand);
   setupHistory('rconCmd',   'rcon', rconSend);
+
+  // Verbindungsstatus-Anzeige (nur im Client-Modus relevant)
+  if (window.mc.onConnectionChange) {
+    window.mc.onConnectionChange(({ connected }) => {
+      const indicator = document.getElementById('connIndicator');
+      if (indicator) {
+        indicator.textContent = connected ? '🟢 Verbunden' : '🔴 Verbindung verloren';
+        indicator.style.color = connected ? 'var(--accent2)' : 'var(--accent3)';
+      }
+    });
+  }
 });
+
+async function reconnectToServer() {
+  if (window.mc.reconnect) {
+    window.mc.reconnect();
+    toast('Verbindung wird neu aufgebaut...');
+    // Server-Liste neu laden
+    setTimeout(async () => {
+      const res = await window.mc.serversLoad();
+      if (res.ok) { serverList = res.servers; renderServerList(); }
+    }, 1000);
+  }
+}
 
 // ── IPC Events ────────────────────────────────────────────────────
 window.mc.onLog(({ id, msg }) => {
@@ -37,19 +73,20 @@ window.mc.onLog(({ id, msg }) => {
 
   // Hochfahr-Status erkennen
   if (msg.includes('Starting Minecraft server') || msg.includes('Starting Server')) {
+    runningIds.add(id);
     startingIds.add(id);
     onlineIds.delete(id);
+    updateServerCardStatus(id);
     if (id === activeId) updateDetailHeader();
-    renderServerList();
   }
   if (msg.includes('Done (') && msg.includes('For help')) {
     startingIds.delete(id);
     onlineIds.add(id);
+    updateServerCardStatus(id);
     if (id === activeId) {
       updateDetailHeader();
       updateServerAddress();
       startStatsPolling();
-      // UPnP falls öffentlich
       const srv = serverList.find(s => s.id === id);
       if (srv?.visibility === 'public') {
         startUpnp(id);
@@ -57,7 +94,6 @@ window.mc.onLog(({ id, msg }) => {
         if (srv.ddnsProvider) updateDdns(id);
       }
     }
-    renderServerList();
   }
 });
 
@@ -68,13 +104,13 @@ window.mc.onStopped(({ id, code }) => {
   onlineIds.delete(id);
   if (!logBuffers[id]) logBuffers[id] = [];
   logBuffers[id].push({ cls: 'err', text: `\n— Server beendet (Exit ${code}) —` });
+  updateServerCardStatus(id);
   if (id === activeId) {
     appendLog('err', `\n— Server beendet (Exit ${code}) —`);
     updateDetailHeader();
     stopStatsPolling();
   }
   window.mc.upnpUnmap({ id }).catch(() => {});
-  renderServerList();
 });
 
 window.mc.onDlProgress((pct) => {
@@ -94,6 +130,7 @@ function showMainTab(id, btn) {
   document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
   document.getElementById('main-' + id).classList.add('active');
   btn.classList.add('active');
+  if (id === 'settings') loadCurrentMode();
 }
 
 function showSubTab(id, btn) {
@@ -144,6 +181,7 @@ function backToList() {
   document.querySelectorAll('nav button')[0].classList.add('active');
   document.getElementById('titlebarServer').textContent = '';
   document.getElementById('statusDot').className = 'status-dot';
+  renderServerList();
 }
 
 function updateDetailHeader() {
@@ -309,18 +347,20 @@ function renderServerList() {
   list.innerHTML = '';
   serverList.forEach(srv => {
     const running = runningIds.has(srv.id);
+    const stopping = stoppingIds.has(srv.id);
     const card = document.createElement('div');
     card.className = 'server-card';
+    card.id = 'card_' + srv.id;
     card.innerHTML = `
       <div class="server-icon-list" id="srvicon_${srv.id}"><span>⬡</span></div>
-      <div class="server-card-dot ${running ? 'running' : ''}"></div>
+      <div class="server-card-dot ${running ? 'running' : ''}" id="dot_${srv.id}"></div>
       <div class="server-card-info">
         <div class="server-card-name">${srv.name}</div>
         <div class="server-card-meta">${srv.loader} · ${srv.version} · ${srv.ram} MB</div>
       </div>
-      <div class="server-card-actions">
+      <div class="server-card-actions" id="actions_${srv.id}">
         ${running
-          ? `<button class="btn btn-danger" style="padding:6px 14px;font-size:12px" ${stoppingIds.has(srv.id) ? 'disabled' : ''} onclick="event.stopPropagation();stopServer('${srv.id}')">${stoppingIds.has(srv.id) ? '⏳ Stoppt...' : '■ Stopp'}</button>`
+          ? `<button class="btn btn-danger" style="padding:6px 14px;font-size:12px" ${stopping ? 'disabled' : ''} onclick="event.stopPropagation();stopServer('${srv.id}')">${stopping ? '⏳ Stoppt...' : '■ Stopp'}</button>`
           : `<button class="btn btn-primary" style="padding:6px 14px;font-size:12px" onclick="event.stopPropagation();startServer('${srv.id}')">▶ Start</button>`
         }
         <button class="btn btn-ghost" style="padding:6px 14px;font-size:12px" onclick="event.stopPropagation();openEditServer('${srv.id}')">✎</button>
@@ -328,12 +368,63 @@ function renderServerList() {
       </div>`;
     card.addEventListener('click', () => openServerDetail(srv.id));
     list.appendChild(card);
-    // Load icon async
     window.mc.iconLoad(srv.path).then(res => {
       const el = document.getElementById('srvicon_' + srv.id);
       if (el && res.ok) el.innerHTML = `<img src="${res.base64}" style="width:100%;height:100%;object-fit:cover;border-radius:6px">`;
     }).catch(() => {});
   });
+}
+
+function updateServerCardStatus(id) {
+  const running = runningIds.has(id);
+  const stopping = stoppingIds.has(id);
+  const dot = document.getElementById('dot_' + id);
+  if (dot) dot.className = 'server-card-dot' + (running ? ' running' : '');
+  const actions = document.getElementById('actions_' + id);
+  if (actions) {
+    actions.innerHTML = `
+      ${running
+        ? `<button class="btn btn-danger" style="padding:6px 14px;font-size:12px" ${stopping ? 'disabled' : ''} onclick="event.stopPropagation();stopServer('${id}')">${stopping ? '⏳ Stoppt...' : '■ Stopp'}</button>`
+        : `<button class="btn btn-primary" style="padding:6px 14px;font-size:12px" onclick="event.stopPropagation();startServer('${id}')">▶ Start</button>`
+      }
+      <button class="btn btn-ghost" style="padding:6px 14px;font-size:12px" onclick="event.stopPropagation();openEditServer('${id}')">✎</button>
+      <button class="btn" style="padding:6px 14px;font-size:12px;background:rgba(248,124,124,0.12);color:var(--accent3)" onclick="event.stopPropagation();deleteServer('${id}')">✕</button>`;
+  }
+}
+
+async function reloadServerList() {
+  const res = await window.mc.serversLoad();
+  if (res.ok) {
+    serverList = res.servers;
+
+    if (window.mc.getServerStatus) {
+      const statusRes = await window.mc.getServerStatus();
+      if (statusRes.ok) {
+        runningIds.clear();
+        startingIds.clear();
+        onlineIds.clear();
+        Object.keys(statusRes.status).forEach(id => {
+          const s = statusRes.status[id];
+          if (s.running) {
+            runningIds.add(id);
+            if (s.phase === 'online') onlineIds.add(id);
+            else startingIds.add(id);
+          }
+        });
+      }
+    }
+
+    renderServerList();
+    if (activeId) {
+      updateDetailHeader();
+      runDiagnosis();
+      loadServerIcon();
+      loadNetworkSettings();
+    }
+    toast('Server-Liste aktualisiert!');
+  } else {
+    toast('Konnte Server-Liste nicht laden: ' + res.error, 'err');
+  }
 }
 
 // ── Server starten/stoppen ────────────────────────────────────────
@@ -355,7 +446,7 @@ async function doStartServer(id) {
   if (res.ok) {
     runningIds.add(id);
     startingIds.add(id);
-    renderServerList();
+    updateServerCardStatus(id);
     if (activeId === id) updateDetailHeader();
     toast('Server startet: ' + srv.name);
   } else toast(res.error, 'err');
@@ -376,8 +467,8 @@ async function doStopServer(id) {
   const res = await window.mc.serverStop(id);
   if (res.ok) {
     stoppingIds.add(id);
+    updateServerCardStatus(id);
     if (activeId === id) updateDetailHeader();
-    renderServerList();
   } else {
     toast(res.error, 'err');
   }
@@ -848,16 +939,17 @@ function makeChartDrawer(canvas, tooltipEl, key, col, maxFixed, showMidline) {
   };
 
   const onMouseMove = (e) => {
+    const arr = statsHistory[key];
+    if (!arr || arr.length < 2) return;
     const rect = canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
-    const pts = statsHistory[key]?.map(p => p.v) || [];
-    if (pts.length < 2) return;
+    const pts = arr.map(p => p.v);
     const pad = { l: 44, r: 12 };
     const cw = canvas.width - pad.l - pad.r;
     const idx = Math.round(((mx - pad.l) / cw) * (pts.length - 1));
     if (idx < 0 || idx >= pts.length) { hoverIdx = -1; tooltipEl.style.display = 'none'; return; }
     hoverIdx = idx;
-    const pt = statsHistory[key][idx];
+    const pt = arr[idx];
     const unit = key === 'ram' ? ' MB' : key === 'cpu' ? '%' : ' TPS';
     tooltipEl.style.display = 'block';
     tooltipEl.style.left = (e.offsetX + 12) + 'px';
@@ -872,8 +964,9 @@ function makeChartDrawer(canvas, tooltipEl, key, col, maxFixed, showMidline) {
   canvas.addEventListener('mouseleave', onMouseLeave);
 
   const redraw = () => {
-    const pts = statsHistory[key]?.slice(-CHART_MAX).map(p => p.v) || [];
-    const labels = statsHistory[key]?.slice(-CHART_MAX).map(p => p.ts) || [];
+    const arr = statsHistory[key] || [];
+    const pts = arr.slice(-CHART_MAX).map(p => p.v);
+    const labels = arr.slice(-CHART_MAX).map(p => p.ts);
     draw(pts, labels, showMidline);
   };
 
@@ -896,8 +989,8 @@ function initCharts() {
 
 async function loadStatsHistory() {
   const res = await window.mc.statsLoad(activeId);
-  if (res.ok) {
-    statsHistory = res.history;
+  if (res.ok && res.history) {
+    statsHistory = { ram: res.history.ram || [], cpu: res.history.cpu || [], tps: res.history.tps || [] };
     Object.keys(charts).forEach(k => charts[k]?.redraw());
   }
 }
@@ -906,11 +999,9 @@ function pushStat(key, value) {
   const ts = new Date().toISOString();
   if (!statsHistory[key]) statsHistory[key] = [];
   statsHistory[key].push({ ts, v: value });
-  // Im Speicher nur 7 Tage (RAM/CPU/TPS)
   const cutoff = Date.now() - 7 * 24 * 3600 * 1000;
   statsHistory[key] = statsHistory[key].filter(p => new Date(p.ts).getTime() > cutoff);
   charts[key]?.redraw();
-  // Persistieren
   if (activeId) window.mc.statsAppendPoint({ id: activeId, key, ts, v: value });
 }
 
@@ -919,14 +1010,15 @@ function startStatsPolling() {
   initCharts();
   statsInterval = setInterval(async () => {
     if (!activeId) return;
+    const srv = serverList.find(s => s.id === activeId);
+    if (!srv) return;
     const res = await window.mc.getStats(activeId);
     if (!res.ok) return;
-    const srv = serverList.find(s => s.id === activeId);
 
     const ramMB = Math.round(res.memory / 1024 / 1024);
     document.getElementById('statRam').textContent = ramMB + ' MB';
-    document.getElementById('statRamSub').textContent = `von ${srv?.ram || '?'} MB`;
-    if (charts.ram) { charts.ram.maxFixed = parseInt(srv?.ram || 2048); }
+    document.getElementById('statRamSub').textContent = `von ${srv.ram || '?'} MB`;
+    if (charts.ram) { charts.ram.maxFixed = parseInt(srv.ram || 2048); }
     pushStat('ram', ramMB);
 
     const cpu = Math.round(res.cpu * 10) / 10;
@@ -1860,12 +1952,13 @@ const PROP_SCHEMA = {
   'broadcast-rcon-to-ops':   { type: 'bool' },
   'sync-chunk-writes':       { type: 'bool' },
   'require-resource-pack':   { type: 'bool' },
+  'resource-pack':           { type: 'resource-pack-list' },
   'server-port':             { type: 'number', min: 1, max: 65535 },
   'rcon.port':               { type: 'number', min: 1, max: 65535 },
   'query.port':              { type: 'number', min: 1, max: 65535 },
   'max-players':             { type: 'number', min: 1, max: 1000 },
-  'view-distance':           { type: 'number', min: 2, max: 32 },
-  'simulation-distance':     { type: 'number', min: 2, max: 32 },
+  'view-distance':           { type: 'slider', min: 2, max: 32 },
+  'simulation-distance':     { type: 'slider', min: 2, max: 32 },
   'max-world-size':          { type: 'number', min: 1, max: 29999984 },
   'spawn-protection':        { type: 'number', min: 0, max: 100 },
   'max-tick-time':           { type: 'number', min: -1 },
@@ -1901,6 +1994,44 @@ function makePropInput(key, val) {
     const min = schema.min !== undefined ? `min="${schema.min}"` : '';
     const max = schema.max !== undefined ? `max="${schema.max}"` : '';
     return `<input type="number" data-key="${key}" value="${val}" ${min} ${max} style="width:100%">`;
+  }
+  if (schema.type === 'slider') {
+    const min = schema.min ?? 2, max = schema.max ?? 32;
+    const nid = `pn_${key.replace(/-/g,'_')}`, sid = `ps_${key.replace(/-/g,'_')}`;
+    return `<div style="display:flex;align-items:center;gap:10px">
+      <input type="number" id="${nid}" data-key="${key}" value="${val}" min="${min}" max="${max}"
+        style="width:58px;flex-shrink:0"
+        oninput="document.getElementById('${sid}').value=this.value">
+      <input type="range" id="${sid}" min="${min}" max="${max}" value="${val}"
+        style="flex:1" oninput="document.getElementById('${nid}').value=this.value">
+    </div>`;
+  }
+  if (schema.type === 'resource-pack-list') {
+    const srv = serverList.find(s => s.id === activeId);
+    const packs = srv?.resourcePacks || [];
+    const currentUrl = val || '';
+    const items = packs.length === 0
+      ? `<p style="font-size:11px;color:var(--muted);padding:4px 0">Keine Packs gespeichert.</p>`
+      : packs.map((p, i) => `
+          <div class="rp-list-entry ${p.url === currentUrl ? 'active' : ''}">
+            <input type="radio" name="rpSelect" ${p.url === currentUrl ? 'checked' : ''}
+              onchange="selectResourcePack(${i})" style="accent-color:var(--accent);flex-shrink:0">
+            <div class="rp-list-entry-info">
+              <div class="rp-list-entry-name">${p.name}</div>
+              <div class="rp-list-entry-url">${p.url}</div>
+            </div>
+            <button class="btn btn-ghost" style="padding:3px 7px;font-size:11px;flex-shrink:0"
+              onclick="removeResourcePack(${i})">✕</button>
+          </div>`).join('');
+    return `<div style="display:flex;flex-direction:column;gap:6px">
+      <input type="hidden" data-key="resource-pack" id="rpUrlField" value="${currentUrl}">
+      ${items}
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:2px">
+        <input type="text" id="rpNewUrl" placeholder="Pack-URL (https://...)" style="flex:1;min-width:150px;font-size:12px">
+        <input type="text" id="rpNewName" placeholder="Name" style="width:90px;font-size:12px">
+        <button class="btn btn-ghost" style="padding:5px 10px;font-size:11px" onclick="addResourcePack()">+ Hinzufügen</button>
+      </div>
+    </div>`;
   }
   return `<input type="text" data-key="${key}" value="${val}" style="width:100%">`;
 }
@@ -1983,6 +2114,45 @@ async function saveProps() {
   else toast(res.error, 'err');
 }
 
+// ── Resource-Pack-Liste (Server-Einstellungen) ────────────────────
+async function addResourcePack() {
+  const url = (document.getElementById('rpNewUrl')?.value || '').trim();
+  if (!url) return toast('Bitte eine URL eingeben.', 'err');
+  const name = (document.getElementById('rpNewName')?.value || '').trim() || url.split('/').pop().replace(/\.zip$/i,'') || 'Pack';
+  const srv = serverList.find(s => s.id === activeId);
+  if (!srv) return;
+  if (!srv.resourcePacks) srv.resourcePacks = [];
+  srv.resourcePacks.push({ name, url });
+  await window.mc.serversSave(serverList);
+  await loadProps();
+  toast('Resource Pack hinzugefügt!');
+}
+
+async function removeResourcePack(i) {
+  const srv = serverList.find(s => s.id === activeId);
+  if (!srv?.resourcePacks) return;
+  srv.resourcePacks.splice(i, 1);
+  // Falls der entfernte Pack aktiv war, URL löschen
+  const field = document.getElementById('rpUrlField');
+  await window.mc.serversSave(serverList);
+  await loadProps();
+}
+
+function selectResourcePack(i) {
+  const srv = serverList.find(s => s.id === activeId);
+  const pack = srv?.resourcePacks?.[i];
+  if (!pack) return;
+  const field = document.getElementById('rpUrlField');
+  if (field) field.value = pack.url;
+  // SHA1 übernehmen falls vorhanden
+  const sha1El = document.querySelector('#propsGrid [data-key="resource-pack-sha1"]');
+  if (sha1El && pack.sha1) sha1El.value = pack.sha1;
+  // Aktiv-Styling aktualisieren
+  document.querySelectorAll('.rp-list-entry').forEach((el, idx) => {
+    el.classList.toggle('active', idx === i);
+  });
+}
+
 // ── Clear-Button Helper ───────────────────────────────────────────
 function toggleClearBtn(inputId, btnId) {
   const val = document.getElementById(inputId).value;
@@ -2043,6 +2213,7 @@ function renderModList(gridId, countId, mods, type) {
       <div style="display:flex;align-items:center;gap:6px">
         <span style="font-size:10px;color:var(--muted);flex:1">${mod.version ? 'v' + mod.version : ''} · ${mod.sizeMB} MB</span>
         <div class="mod-list-actions">
+          <button title="Config bearbeiten" onclick='openModConfig(${JSON.stringify(mod)}, "${type}")'>⚙</button>
           <button class="danger" onclick='deleteModOrPlugin(${JSON.stringify(mod.path)}, ${JSON.stringify(mod.name)}, "${type}")'>✕</button>
         </div>
       </div>`;
@@ -2072,6 +2243,65 @@ async function toggleMod(modPath, disabled) {
   const res = await window.mc.modToggle({ modPath, disabled });
   if (res.ok) { await scanMods(); await scanPlugins(); }
   else toast(res.error, 'err');
+}
+
+// ── Mod/Plugin Config-Editor ──────────────────────────────────────
+let _configModalPath = null;
+let _configModalFiles = [];
+
+async function openModConfig(mod, type) {
+  const srv = serverList.find(s => s.id === activeId);
+  if (!srv) return;
+  const res = await window.mc.modConfigFiles({ serverPath: srv.path, modName: mod.name, type });
+  if (!res.ok || res.files.length === 0) {
+    return toast('Keine Config-Dateien gefunden.', 'err');
+  }
+  _configModalFiles = res.files;
+  document.getElementById('configModal').style.display = 'flex';
+
+  if (res.files.length === 1) {
+    document.getElementById('configFileList').style.display = 'none';
+    await _loadConfigFile(res.files[0]);
+  } else {
+    const list = document.getElementById('configFileList');
+    list.style.display = 'flex';
+    list.innerHTML = '';
+    res.files.forEach((f, i) => {
+      const btn = document.createElement('button');
+      btn.className = 'config-file-btn';
+      btn.textContent = f.name;
+      btn.title = f.name;
+      btn.onclick = async () => {
+        list.querySelectorAll('.config-file-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        await _loadConfigFile(f);
+      };
+      list.appendChild(btn);
+    });
+    document.getElementById('configModalTitle').textContent = mod.name + ' — Config';
+    document.getElementById('configModalArea').value = '';
+  }
+}
+
+async function _loadConfigFile(f) {
+  const res = await window.mc.fileRead(f.path);
+  if (!res.ok) return toast(res.error, 'err');
+  _configModalPath = f.path;
+  document.getElementById('configModalTitle').textContent = f.name;
+  document.getElementById('configModalArea').value = res.content;
+}
+
+async function saveConfigModal() {
+  if (!_configModalPath) return toast('Keine Datei geöffnet.', 'err');
+  const res = await window.mc.fileWrite(_configModalPath, document.getElementById('configModalArea').value);
+  if (res.ok) toast('Config gespeichert!');
+  else toast(res.error, 'err');
+}
+
+function closeConfigModal() {
+  document.getElementById('configModal').style.display = 'none';
+  _configModalPath = null;
+  _configModalFiles = [];
 }
 
 async function deleteModOrPlugin(modPath, name, type) {
@@ -2361,4 +2591,21 @@ async function updateIpv6Display(id) {
 function copyIpv6Address() {
   const addr = _revealedTexts['ipv6Text'] || document.getElementById('ipv6Text').textContent;
   if (addr && addr !== '—') { navigator.clipboard.writeText(addr); toast('IPv6-Adresse kopiert!'); }
+}
+
+// ── App-Modus Anzeige & Wechsel ────────────────────────────────────
+async function loadCurrentMode() {
+  const res = await window.mc.getAppMode();
+  const el = document.getElementById('currentModeText');
+  if (!el) return;
+  if (!res.ok || !res.mode) { el.textContent = 'Unbekannt'; return; }
+  if (res.mode === 'server') {
+    el.textContent = '🖥 Server-Modus — dieser PC hostet Minecraft-Server.';
+  } else {
+    el.textContent = `📡 Client-Modus — verbunden mit ${res.connection?.host}:${res.connection?.port}`;
+  }
+}
+async function switchAppMode() {
+  if (!(await showConfirm('Modus wirklich wechseln?', 'Modus wechseln', 'Ja, wechseln', false))) return;
+  await window.mc.resetAppMode();
 }
